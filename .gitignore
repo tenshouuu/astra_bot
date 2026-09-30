@@ -1,0 +1,31 @@
+# Cursor — local only; project rules live in ai/rules/ (symlink .cursor/rules → ai/rules per ai/README.md)
+.cursor/
+
+# Agent runtime adapters are generated locally by `pnpm sync:agents`; canonical sources live in ai/.
+.agents/
+.codex
+# Keep only shared Claude secret guardrails; all other runtime state is local.
+/.claude/*
+!/.claude/settings.json
+
+node_modules
+dist
+*.log
+.idea/
+.env
+.env.*
+!.env.example
+!.env.sample
+# Local secret-bearing env dumps (e.g. a stage config pasted out of the
+# deployment console). Never committed — real credentials, not fixtures.
+test.json
+*.env.json
+.DS_Store
+*.tsbuildinfo
+.turbo
+coverage
+.pnpm-store
+.venv-translate/
+
+# Local CodeGraph index and runtime state.
+.codegraph/
