@@ -1,0 +1,14 @@
+---
+description: Core repository conventions and security boundaries
+alwaysApply: true
+---
+
+# Core rules
+
+- Read `AGENT_CONTEXT.md` before changing behavior or architecture.
+- Keep temporary plans, investigations, reviews, and architecture drafts under `ai/dev/` only.
+- Never commit credentials, tokens, chat contents, user exports, or production identifiers.
+- Do not present planned Telegram, moderation, persistence, or AI behavior as implemented.
+- Preserve the separation between app construction in `src/app.ts` and network startup in
+  `src/server.ts` so tests do not bind ports.
+- Prefer small domain modules with explicit inputs over access to global environment or SDK clients.

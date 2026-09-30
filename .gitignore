@@ -1,12 +1,8 @@
-# Cursor — local only; project rules live in ai/rules/ (symlink .cursor/rules → ai/rules per ai/README.md)
+# Local agent runtime state; canonical project instructions live in AGENTS.md and ai/.
 .cursor/
-
-# Agent runtime adapters are generated locally by `pnpm sync:agents`; canonical sources live in ai/.
 .agents/
 .codex
-# Keep only shared Claude secret guardrails; all other runtime state is local.
-/.claude/*
-!/.claude/settings.json
+.claude/
 
 node_modules
 dist

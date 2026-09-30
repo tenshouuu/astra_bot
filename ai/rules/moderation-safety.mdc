@@ -1,0 +1,17 @@
+---
+description: Safety rules for Telegram moderation and assistant access
+alwaysApply: false
+globs:
+  - "src/modules/moderation/**/*.ts"
+  - "src/modules/telegram/**/*.ts"
+  - "src/modules/assistant/**/*.ts"
+---
+
+# Moderation safety
+
+- Resolve administrator and protected-user status before recommending or executing a ban.
+- Administrators and protected users must never be banned, including through owner callbacks or retries.
+- Treat an unknown actor or uncertain classification as a review case, not automatic guilt.
+- Re-authorize the actor and re-check target protection immediately before every side effect.
+- Keep AI classification advisory; deterministic application code owns authorization and actions.
+- Make Telegram update handling and moderation callbacks idempotent and auditable.

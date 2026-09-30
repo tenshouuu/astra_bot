@@ -1,0 +1,13 @@
+---
+description: Required verification before code handoff
+alwaysApply: true
+---
+
+# Checks before handoff
+
+- Run the smallest relevant test while iterating.
+- Before handing off code, run `pnpm check`; if a check cannot run, report the exact command and reason.
+- For runtime/bootstrap changes, also run `pnpm build` and smoke-test the built server or use Fastify
+  injection.
+- For changes under `ai/rules/` or `ai/skills/`, run `pnpm sync:agents` before `pnpm audit:agents`.
+- Never weaken lint, type, test, or audit configuration merely to make a failing check pass.
