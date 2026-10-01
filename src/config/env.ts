@@ -1,9 +1,13 @@
+import * as process from 'node:process';
+
 export type AppConfig = Readonly<{
   nodeEnv: "development" | "test" | "production";
   host: string;
   port: number;
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   botToken: string;
+  ownerUserId: string;
+  allowedChatId: string;
 }>;
 
 const environments = new Set<AppConfig["nodeEnv"]>(["development", "test", "production"]);
@@ -33,6 +37,14 @@ function readPort(): number {
   return value;
 }
 
+function handleString(name: string, value: string | undefined, ): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${name} is not defined`);
+  }
+
+  return value;
+}
+
 export function getConfig(): AppConfig {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
@@ -44,6 +56,8 @@ export function getConfig(): AppConfig {
     host: process.env.HOST ?? "0.0.0.0",
     port: readPort(),
     logLevel: readEnum("LOG_LEVEL", "info", logLevels),
-    botToken,
+    botToken: handleString('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
+    allowedChatId: handleString('ALLOWED_CHAT_ID', process.env.ALLOWED_CHAT_ID),
+    ownerUserId: handleString('OWNER_USER_ID', process.env.OWNER_USER_ID),
   };
 }

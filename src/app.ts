@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { AppConfig } from "@app/config/env";
 import { healthRoutes } from "@app/routes/health";
 import { meRoutes } from "@app/routes/me";
-import { getBotInfo } from "@app/telegram";
+import { getBotInfo } from "@app/modules/telegram/api";
 import type { UserFromGetMe } from "grammy/types";
 
 export type AppDependencies = Readonly<{
