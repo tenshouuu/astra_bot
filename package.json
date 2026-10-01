@@ -14,7 +14,7 @@
     "lint:fix": "eslint . --fix",
     "format": "node scripts/format-root.mjs --write",
     "format:check": "node scripts/format-root.mjs --check",
-    "test": "tsx --test test/**/*.test.ts",
+    "test": "tsx --test test/**/*.test.ts test/*.test.mjs",
     "check": "corepack pnpm typecheck && corepack pnpm lint && corepack pnpm format:check && corepack pnpm test && corepack pnpm audit:agents",
     "sync:agents": "node scripts/sync-agents.mjs",
     "audit:agents": "node scripts/audit-agents.mjs",

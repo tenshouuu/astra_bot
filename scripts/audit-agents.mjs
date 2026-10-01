@@ -6,9 +6,11 @@
  * AGENT_CONTEXT.md files point at existing repo paths. For AGENTS.md it also
  * verifies that the generated rule/skill indexes match the canonical ai/
  * sources. All tracked and non-ignored Markdown is checked for local links
- * and heading anchors. External URLs are not fetched.
+ * and heading anchors. Source comments are checked for local links and explicit
+ * repository paths. External URLs are not fetched; prose accuracy needs review.
  */
 import fs from "node:fs";
+import ts from "typescript";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -87,17 +89,38 @@ function listRepoEntries() {
   return entries;
 }
 
-export function findMarkdownFiles(repositoryRoot = root) {
+function findRepositoryFiles(repositoryRoot = root) {
   const paths = execFileSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
     { cwd: repositoryRoot, encoding: "utf8" },
   );
   return [...new Set(paths.split("\0"))]
-    .filter((name) => /\.(?:md|mdc)$/.test(name))
     .map((name) => path.join(repositoryRoot, name))
     .filter((filePath) => fs.existsSync(filePath))
     .sort((a, b) => toRepoPath(a).localeCompare(toRepoPath(b), "en"));
+}
+
+export function findMarkdownFiles(repositoryRoot = root) {
+  return findRepositoryFiles(repositoryRoot).filter((name) => /\.(?:md|mdc)$/.test(name));
+}
+
+export function sourceComments(contents, fileName = "source.ts") {
+  const source = ts.createSourceFile(fileName, contents, ts.ScriptTarget.Latest, true);
+  const masked = contents.split("").map((char) => (char === "\n" ? "\n" : " "));
+  const copyRanges = (ranges) => {
+    for (const { pos, end } of ranges ?? []) {
+      // String offsets use UTF-16, as do TypeScript comment ranges.
+      for (let index = pos; index < end; index++) masked[index] = contents[index];
+    }
+  };
+  const visit = (node) => {
+    copyRanges(ts.getLeadingCommentRanges(contents, node.pos));
+    copyRanges(ts.getTrailingCommentRanges(contents, node.end));
+    for (const child of node.getChildren(source)) visit(child);
+  };
+  visit(source);
+  return masked.join("");
 }
 
 function readFrontmatter(contents) {
@@ -299,10 +322,9 @@ export function markdownAnchors(contents) {
   return anchors;
 }
 
-export function auditMarkdownLinks(filePath, repositoryRoot = root) {
-  const contents = maskCodeFences(readText(filePath)).replace(
-    /(`+)(?!`)([\s\S]*?)\1(?!`)/g,
-    (match) => match.replace(/[^\n]/g, " "),
+export function auditMarkdownLinks(filePath, repositoryRoot = root, text = readText(filePath)) {
+  const contents = maskCodeFences(text).replace(/(`+)(?!`)([\s\S]*?)\1(?!`)/g, (match) =>
+    match.replace(/[^\n]/g, " "),
   );
   const links = [
     ...contents.matchAll(/!?\[[^\]\n]*\]\((<[^>\n]+>|[^\s)]+)(?:\s+["'][^\n]*?["'])?\)/g),
@@ -574,12 +596,27 @@ function expandReference(ref) {
   return variants.split(",").flatMap((variant) => expandReference(`${before}${variant}${after}`));
 }
 
-function auditPathReferences(filePath, repoEntries, explicitOnly = false) {
+export function auditPathReferences(
+  filePath,
+  repoEntries = listRepoEntries(),
+  explicitOnly = false,
+  text = readText(filePath),
+  comments = false,
+) {
   const relativePath = toRepoPath(filePath);
   const baseDir = path.dirname(filePath);
-  const contents = stripHistoricalSections(readText(filePath));
+  const contents = stripHistoricalSections(text);
   const findings = [];
   const refs = extractPathReferences(contents);
+  if (comments) {
+    for (const match of contents.matchAll(
+      /(?:^|[\s`("'])(?:ai|src|test|prisma|scripts|docs|apps|packages)\/[\w./-]+/gm,
+    )) {
+      const value = match[0].trim().replace(/^[`("']/, "");
+      const line = offsetToLine(contents, match.index);
+      addCandidate(refs, value, line, lineAt(contents, line), "inline-code");
+    }
+  }
   const seenRefs = new Set();
 
   for (const ref of refs) {
@@ -589,7 +626,7 @@ function auditPathReferences(filePath, repoEntries, explicitOnly = false) {
     if (
       ref.source !== "inline-code" ||
       (explicitOnly &&
-        !/^(?:ai|apps|packages|docs|scripts)\//.test(ref.value) &&
+        !/^(?:ai|src|test|prisma|apps|packages|docs|scripts)\//.test(ref.value) &&
         !rootLevelPathNames.has(ref.value))
     ) {
       continue;
@@ -722,7 +759,19 @@ function main() {
         : auditPathReferences(filePath, repoEntries, true)),
     ],
   }));
-  const reports = [...agentReports, ...contextReports, ...markdownReports];
+  const commentReports = findRepositoryFiles()
+    .filter((file) => /\.(?:ts|js|mjs|cjs)$/.test(file))
+    .map((filePath) => {
+      const comments = sourceComments(readText(filePath), filePath);
+      return {
+        relativePath: toRepoPath(filePath),
+        findings: [
+          ...auditMarkdownLinks(filePath, root, comments),
+          ...auditPathReferences(filePath, repoEntries, false, comments, true),
+        ],
+      };
+    });
+  const reports = [...agentReports, ...contextReports, ...markdownReports, ...commentReports];
   const errorCount = reports.reduce(
     (count, report) =>
       count + report.findings.filter((finding) => finding.severity === "error").length,
@@ -736,6 +785,11 @@ function main() {
   );
   for (const report of markdownReports.filter((report) => report.findings.length > 0)) {
     printReports("Markdown link errors", [report]);
+  }
+
+  console.log(`Source files checked for comment links: ${commentReports.length}`);
+  for (const report of commentReports.filter((report) => report.findings.length > 0)) {
+    printReports("Comment link errors", [report]);
   }
 
   console.log(`Rules indexed: ${rules.length}`);

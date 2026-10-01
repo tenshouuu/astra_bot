@@ -23,7 +23,7 @@ const targets = [
   "ai/skills/**/*.md",
   "**/AGENT_CONTEXT.md",
   "src/**/*.ts",
-  "test/**/*.ts",
+  "test/**/*.{ts,mjs}",
   "scripts/**/*.{js,mjs,cjs}",
 ];
 

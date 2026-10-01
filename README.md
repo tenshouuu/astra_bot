@@ -30,8 +30,9 @@ Usernames can be entered with or without `@`; comparisons ignore case. Groups wi
 Telegram uses long polling. `/ask <question>` is available to administrators of the configured group
 and to `OWNER_USERNAME` in a private chat. Anonymous administrators cannot use `/ask`.
 Requests time out after 60 seconds,
-accept up to 8000 input characters, and generate up to 2048 output tokens. Only one question per user
-in a chat can be pending. Long answers are sent as plain text in multiple replies.
+accept up to 8000 input characters, and generate up to 2048 output tokens. Up to eight requests run in the background, with one active request per conversation and
+one pending question per user in a chat. Access is checked before each answer chunk. Shutdown waits
+for active requests before closing memory and the database. Long answers are sent as plain text in multiple replies.
 Provider response storage is disabled, and request/response contents are not logged.
 
 ## Conversation memory
@@ -42,7 +43,7 @@ Generate the Prisma client after installing dependencies with `pnpm db:generate`
 
 Ordinary text received in the allowed group and the owner's private chat contributes to context.
 Each group topic has separate shared memory; private chats are isolated by Telegram chat ID.
-Other chats are ignored. Commands other than `/ask` are excluded. The bot responds only to `/ask`.
+Other chats are ignored. Commands other than `/ask` are excluded. The bot also handles `/ping` and `/reset`.
 Group members' text is context, while assistant access still requires administrator status.
 For ordinary group messages to reach the bot, make it a group administrator or disable privacy mode
 in BotFather. Memory starts with updates the bot receives; this implementation does not import earlier
@@ -57,13 +58,16 @@ Instructions for Astra are separate from the untrusted conversation context.
 Summarization runs in the background once unsummarized history reaches 40 messages or exceeds the
 recent-context byte budget. It keeps up to 12 recent messages verbatim, summarizes bounded batches,
 and starts at most one job per conversation every 30 seconds. Backlogs and failed jobs are retried
-while the process is running. Summary generation uses `OPENAI_MODEL`; it incurs an additional API
+while the process is running. Globally, at most two summary jobs run with up to 64 conversations queued.
+When the queue is full, additional scheduling is dropped until a later refresh; stored messages remain
+available. Shutdown discards queued jobs and waits for active summaries. Summary generation uses `OPENAI_MODEL`; it incurs an additional API
 request only when compaction is needed. `/ask` uses the currently available summary without waiting.
 One polling process is supported; summary versions prevent stale database writes, but running multiple
 bot processes is not supported.
 
 `/reset` clears the current chat/topic's messages and summary; group administrators can reset shared
-topic memory, and the owner can reset private memory. Raw messages expire after seven days, with
+topic memory, and the owner can reset private memory. Reset is rejected while an `/ask` request is
+active in the conversation. Raw messages expire after seven days, with
 cleanup at startup and hourly. Summaries remain while a conversation is active; conversations idle
 for seven days are deleted. Deleted or edited Telegram messages are not automatically reconciled.
 A summary can omit details; recent verbatim messages remain the source for exact wording.
@@ -84,7 +88,9 @@ Without `TEST_DATABASE_URL`, the database integration test is skipped; unit and 
 - `pnpm db:migrate` — apply checked-in PostgreSQL migrations.
 - `pnpm db:dev` — create a migration during development.
 - `pnpm check` — typecheck, lint, formatting, tests, and agent-harness audit.
-- `pnpm sync:agents` — rebuild agent indexes and local adapters from `ai/`.
+- `pnpm audit:agents` — check generated indexes, Markdown links, and local paths/links in source
+  comments. External URLs and prose accuracy are not checked automatically.
+- `pnpm sync:agents` — rebuild the rule and skill indexes in `AGENTS.md` from `ai/`.
 
 Agent navigation starts in [AGENTS.md](AGENTS.md). Product and safety context lives in
 [AGENT_CONTEXT.md](AGENT_CONTEXT.md).
