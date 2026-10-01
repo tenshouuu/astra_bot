@@ -73,7 +73,7 @@ export function getConfig(): AppConfig {
     databaseUrl: readRequiredString("DATABASE_URL", process.env.DATABASE_URL),
     botToken: readRequiredString("TELEGRAM_BOT_TOKEN", process.env.TELEGRAM_BOT_TOKEN),
     openaiApiKey: readRequiredString("OPENAI_API_KEY", process.env.OPENAI_API_KEY),
-    openaiModel: readRequiredString("OPENAI_MODEL", process.env.OPENAI_MODEL ?? "gpt-6.1-sol"),
+    openaiModel: readRequiredString("OPENAI_MODEL", process.env.OPENAI_MODEL ?? "gpt-6-luna"),
     allowedChatUsername,
     allowedChatId,
     ownerUsername: readRequiredString("OWNER_USERNAME", process.env.OWNER_USERNAME),

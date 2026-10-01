@@ -23,7 +23,7 @@ If both are set, the ID takes precedence. For the local Compose database, also s
 `postgresql://astra:<your-url-encoded-password>@localhost:5432/astra` as `DATABASE_URL`.
 For an existing PostgreSQL instance, Compose is optional. Migrations create new memory tables;
 `db:migrate` applies the checked-in migration and does not reset the database.
-`OPENAI_MODEL` defaults to `gpt-6.1-sol` and must name a model available to your OpenAI project.
+`OPENAI_MODEL` defaults to `gpt-6-luna` and must name a model available to your OpenAI project.
 
 The HTTP surface exposes `GET /health`, `GET /ready`, and `GET /me` on port `3000`.
 Usernames can be entered with or without `@`; comparisons ignore case. Groups without a public username are authorized by ID.
