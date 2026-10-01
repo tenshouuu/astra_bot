@@ -1,4 +1,4 @@
-import * as process from 'node:process';
+import * as process from "node:process";
 
 export type AppConfig = Readonly<{
   nodeEnv: "development" | "test" | "production";
@@ -6,8 +6,12 @@ export type AppConfig = Readonly<{
   port: number;
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   botToken: string;
-  ownerUserId: string;
-  allowedChatId: string;
+  databaseUrl: string;
+  openaiApiKey: string;
+  openaiModel: string;
+  ownerUsername: string;
+  allowedChatUsername?: string | undefined;
+  allowedChatId?: number | undefined;
 }>;
 
 const environments = new Set<AppConfig["nodeEnv"]>(["development", "test", "production"]);
@@ -37,27 +41,41 @@ function readPort(): number {
   return value;
 }
 
-function handleString(name: string, value: string | undefined, ): string {
-  if (typeof value !== 'string') {
+function readRequiredString(name: string, value: string | undefined): string {
+  if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${name} is not defined`);
   }
 
-  return value;
+  return value.trim();
 }
 
 export function getConfig(): AppConfig {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (!botToken) {
-    throw new Error("TELEGRAM_BOT_TOKEN is not defined");
+  const allowedChatUsername = process.env.ALLOWED_CHAT_USERNAME?.trim() || undefined;
+  const rawChatId = process.env.ALLOWED_CHAT_ID?.trim();
+  const allowedChatId = rawChatId ? Number(rawChatId) : undefined;
+  if (
+    rawChatId &&
+    (!/^-\d+$/.test(rawChatId) ||
+      !Number.isSafeInteger(allowedChatId) ||
+      allowedChatId === undefined ||
+      allowedChatId >= 0)
+  ) {
+    throw new Error("ALLOWED_CHAT_ID must be a negative safe integer");
   }
-
+  if (allowedChatId === undefined && !allowedChatUsername) {
+    throw new Error("ALLOWED_CHAT_ID or ALLOWED_CHAT_USERNAME must be defined");
+  }
   return {
     nodeEnv: readEnum("NODE_ENV", "development", environments),
     host: process.env.HOST ?? "0.0.0.0",
     port: readPort(),
     logLevel: readEnum("LOG_LEVEL", "info", logLevels),
-    botToken: handleString('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
-    allowedChatId: handleString('ALLOWED_CHAT_ID', process.env.ALLOWED_CHAT_ID),
-    ownerUserId: handleString('OWNER_USER_ID', process.env.OWNER_USER_ID),
+    databaseUrl: readRequiredString("DATABASE_URL", process.env.DATABASE_URL),
+    botToken: readRequiredString("TELEGRAM_BOT_TOKEN", process.env.TELEGRAM_BOT_TOKEN),
+    openaiApiKey: readRequiredString("OPENAI_API_KEY", process.env.OPENAI_API_KEY),
+    openaiModel: readRequiredString("OPENAI_MODEL", process.env.OPENAI_MODEL ?? "gpt-6.1-sol"),
+    allowedChatUsername,
+    allowedChatId,
+    ownerUsername: readRequiredString("OWNER_USERNAME", process.env.OWNER_USERNAME),
   };
 }

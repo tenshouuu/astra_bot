@@ -16,6 +16,7 @@ const targets = [
   "*.md",
   "*.json",
   "*.js",
+  "prisma.config.ts",
   "ai/*.md",
   "ai/dev/**/*.md",
   "ai/roles/**/*.md",

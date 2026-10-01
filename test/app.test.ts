@@ -10,6 +10,11 @@ const testConfig: AppConfig = {
   port: 3000,
   logLevel: "silent",
   botToken: "test-token",
+  databaseUrl: "postgresql://localhost/astra_test",
+  openaiApiKey: "test-key",
+  openaiModel: "test-model",
+  ownerUsername: "@Test_Owner",
+  allowedChatUsername: "test-chat",
 };
 
 void test("GET /health reports service health", async (context) => {

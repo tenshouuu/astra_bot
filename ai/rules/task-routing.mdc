@@ -1,0 +1,25 @@
+---
+description: Select task workflows and roles before specialized work
+alwaysApply: true
+---
+
+# Task routing
+
+Before specialized investigation or edits, classify the requested outcome using the generated skill
+index in `AGENTS.md`. Read the matching skill and its linked role before doing that work. Select by
+intent, not only file extension. State the selected workflow and role briefly in the first update.
+
+- Harness review or changes (instruction loading, rules, roles, skills, agent checks): use
+  `ai/skills/maintain-agent-harness/SKILL.md`.
+- Product code or architecture review without implementation: use `ai/skills/review-change/SKILL.md`.
+- Backend implementation, debugging, refactoring, configuration, persistence, or migrations: use
+  `ai/skills/implement-service-slice/SKILL.md`.
+
+An explicitly requested role takes precedence; still load the workflow matching the task. For a mixed
+task, load each workflow when entering its phase rather than loading every role in advance. A request
+for review alone does not authorize implementation. Re-evaluate routing if the scope changes.
+
+For a task outside these triggers, follow core rules and explain the relevant approach; do not force
+an unrelated skill or create a new role just to cover a one-off task. Ask only when ambiguity affects
+the requested outcome. Scoped rules apply by both matching paths and relevant behavior, including
+work outside their globs that changes the same safety boundary.

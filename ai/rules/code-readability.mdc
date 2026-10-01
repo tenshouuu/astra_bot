@@ -1,0 +1,29 @@
+---
+description: Readable code and simple maintainable implementation
+alwaysApply: false
+globs:
+  - "src/**/*.ts"
+  - "test/**/*.ts"
+  - "scripts/**/*.mjs"
+  - "scripts/**/*.js"
+  - "prisma.config.ts"
+---
+
+# Code readability
+
+- Prefer the smallest reliable change that fits existing module boundaries and naming conventions.
+  Reuse existing behavior before introducing helpers; extract shared policy when duplication would
+  allow behavior to diverge. Avoid speculative abstractions, unused exports, dead branches, unused
+  dependencies, and artifacts without a current consumer.
+- Name values and functions by their domain meaning. Keep execution order visible; prefer guard
+  clauses and straightforward control flow over nested conditions, clever expressions, and wrappers
+  that only forward arguments. Split functions when responsibilities differ, not at an arbitrary size.
+- Separate logical phases with one blank line: setup, validation, transformation, external effects,
+  and result. Keep related declarations together, then leave a blank line before the next phase.
+  Keep tightly related statements together; do not insert a blank line after every statement.
+- Use braces for multi-line conditions and nontrivial branches. Comments explain a constraint or
+  reason that code cannot express, rather than paraphrasing the next statement.
+- Prettier owns mechanical formatting. These rules and code review own semantic grouping and
+  understandability; do not enforce a blank line after every declaration through ESLint.
+- Tests describe observable behavior with clear setup, action, and assertions. Keep fixtures minimal
+  and use synthetic data. Apply these conventions to touched logic without unrelated mass reformatting.

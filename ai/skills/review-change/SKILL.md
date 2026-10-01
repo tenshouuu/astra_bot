@@ -5,7 +5,9 @@ description: Review Astra Bot code or architecture for defects, moderation safet
 
 # Review a change
 
-Use the [reviewer role](../../roles/reviewer.md). Read `AGENT_CONTEXT.md`, the changed files, and the
+Use the [reviewer role](../../roles/reviewer.md). Load `ai/rules/code-readability.mdc` when reviewing code. For moderation or access boundaries,
+also load the [safety specialist role](../../roles/moderation-engineer.md) and
+`ai/rules/moderation-safety.mdc`. Read `AGENT_CONTEXT.md`, the changed files, and the
 rules whose globs match them. Prioritize exploitable authorization gaps, possible bans of protected or
 admin users, non-idempotent callbacks, secret exposure, and misleading readiness claims.
 

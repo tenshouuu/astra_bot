@@ -1,25 +1,29 @@
-import { getConfig } from '@app/config/env';
+import type { AppConfig } from "@app/config/env";
+import type { Ask } from "@app/modules/openai/api";
+import type { ConversationMemory } from "@app/modules/memory/service";
+import { captureMessages } from "@app/modules/telegram/memory";
+import { createAskHandler, createResetHandler } from "@app/modules/telegram/ask";
 import { Bot } from "grammy";
 
-const config = getConfig();
-export const bot = new Bot(getConfig().botToken);
+export function createBot(config: AppConfig, ask: Ask, memory?: ConversationMemory) {
+  const bot = new Bot(config.botToken);
 
-bot.command("ping", async (ctx) => {
-  console.log("Получен /ping", {
-    chatId: ctx.chat.id,
-    chatType: ctx.chat.type,
-    chatName: ctx.chat.username,
-    userId: ctx.from?.id,
-    userName: ctx.from?.username,
-    allowedChatId: config.allowedChatId,
-    ownerUserId: config.ownerUserId,
+  if (memory) bot.use(captureMessages(config, memory));
+
+  bot.command("ping", async (ctx) => {
+    await ctx.reply("Я тут, слушаю.");
   });
 
-  await ctx.reply("pong");
-});
+  const askHandler = createAskHandler(config, ask, memory);
+  bot.command("ask", askHandler);
 
-bot.catch(({ ctx }) => {
-  console.error("TELEGRAM BOT: Error Telegram update", {
-    updateId: ctx.update.update_id,
+  if (memory) bot.command("reset", createResetHandler(config, memory, askHandler.isPending));
+
+  bot.catch(({ ctx }) => {
+    console.error("Telegram update failed", { updateId: ctx.update.update_id });
   });
-});
+  return Object.assign(bot, {
+    waitForRequests: askHandler.waitForRequests,
+    closeRequests: askHandler.close,
+  });
+}
