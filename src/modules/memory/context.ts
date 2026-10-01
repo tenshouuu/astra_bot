@@ -24,6 +24,7 @@ export function contextMessage(message: StoredMessage): ContextMessage {
   const author = limitText(message.author, 512);
   let text = limitText(message.text, MESSAGE_BYTES);
   let content = JSON.stringify({ author, text });
+
   // JSON escaping also counts toward the budget (for example, control characters).
   while (Buffer.byteLength(content) > MESSAGE_BYTES) {
     const smallerSize =
@@ -31,12 +32,14 @@ export function contextMessage(message: StoredMessage): ContextMessage {
     text = limitText(text, Math.max(0, smallerSize));
     content = JSON.stringify({ author, text });
   }
+
   return { role: message.role === "assistant" ? "assistant" : "user", content };
 }
 
 export function recentMessages(messages: readonly StoredMessage[]): ContextMessage[] {
   const result: ContextMessage[] = [];
   let remaining = HISTORY_BYTES;
+
   for (const message of [...messages].reverse()) {
     const item = contextMessage(message);
     const bytes = Buffer.byteLength(item.content);
@@ -44,5 +47,6 @@ export function recentMessages(messages: readonly StoredMessage[]): ContextMessa
     result.unshift(item);
     remaining -= bytes;
   }
+
   return result;
 }
