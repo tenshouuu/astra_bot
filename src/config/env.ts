@@ -3,6 +3,7 @@ export type AppConfig = Readonly<{
   host: string;
   port: number;
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+  botToken: string;
 }>;
 
 const environments = new Set<AppConfig["nodeEnv"]>(["development", "test", "production"]);
@@ -32,11 +33,17 @@ function readPort(): number {
   return value;
 }
 
-export function loadConfig(): AppConfig {
+export function getConfig(): AppConfig {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) {
+    throw new Error("TELEGRAM_BOT_TOKEN is not defined");
+  }
+
   return {
     nodeEnv: readEnum("NODE_ENV", "development", environments),
     host: process.env.HOST ?? "0.0.0.0",
     port: readPort(),
     logLevel: readEnum("LOG_LEVEL", "info", logLevels),
+    botToken,
   };
 }

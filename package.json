@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json --resolve-full-paths --resolve-full-extension .js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -31,7 +31,8 @@
   },
   "dependencies": {
     "dotenv": "^17.2.3",
-    "fastify": "^5.12.5"
+    "fastify": "^5.12.5",
+    "grammy": "1.46.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
@@ -40,6 +41,7 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^16.4.0",
     "prettier": "^3.6.2",
+    "tsc-alias": "^1.8.16",
     "tsx": "^4.23.15",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.44.1"
