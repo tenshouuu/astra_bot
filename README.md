@@ -55,6 +55,150 @@ one pending question per user in a chat. Access is checked before each answer ch
 for active requests before closing memory and the database. Long answers are sent as plain text in multiple replies.
 Provider response storage is disabled, and request/response contents are not logged.
 
+## VPS deployment
+
+Production uses [Dockerfile](Dockerfile), [production Compose](deploy/compose.yaml), and
+[GitHub Actions](.github/workflows/deploy.yaml). GitHub builds Linux amd64 application and migration
+images in GHCR, tagged with the full commit SHA. Pushes to `main` and manual workflow runs on `main`
+deploy after `pnpm check` passes. The VPS does not build code. The existing root Compose remains
+the local development database.
+
+### Prepare the VPS once
+
+Use Ubuntu 24.04 and install Docker Engine plus the Compose plugin using the
+[official instructions](https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository).
+The following commands run on the VPS as root:
+
+```bash
+apt-get update
+apt-get install -y rsync util-linux openssl
+adduser --disabled-password --gecos "" deploy
+usermod -aG docker deploy
+install -d -o deploy -g deploy -m 700 /opt/astra-bot
+install -d -o deploy -g deploy -m 700 /home/deploy/.ssh
+```
+
+Generate a dedicated deployment key on your computer:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/astra-deploy -C astra-deploy
+```
+
+For unattended Actions, leave this dedicated key's passphrase empty. Put its public key in
+`/home/deploy/.ssh/authorized_keys` on the VPS; set owner `deploy:deploy` and permissions `600`.
+The Docker group grants root-equivalent access, so keep this key restricted to deployment.
+Test login from your computer with `ssh -i ~/.ssh/astra-deploy deploy@YOUR_VPS_IP`.
+
+Copy [the production env example](deploy/.env.example) to `/opt/astra-bot/.env` on the VPS and
+fill it in using an editor there. Run `openssl rand -hex 24` to generate the database password.
+Set the same value in `POSTGRES_PASSWORD` and in `DATABASE_URL`; the hex password needs no URL
+escaping. Use host `postgres`, not `localhost`, in the URL. Set `.env` permissions to `600`.
+Keep the bot tokens and database credentials on the VPS, outside Git and Docker images.
+Do not change `POSTGRES_PASSWORD` after database initialization without also changing the database
+role password; changing the env file alone does not rotate an existing database password.
+
+Actions pulls private GHCR images using its short-lived `GITHUB_TOKEN`, sent through SSH and stored
+in a temporary Docker configuration removed after deployment. No registry PAT is needed for Actions.
+For manual deployments that pull images, as `deploy`, log in to GHCR with a GitHub classic PAT with `read:packages`
+and access to this repository's packages (authorize organization SSO if applicable):
+
+```bash
+read -rsp 'GHCR read token: ' ghcr_token
+printf '\n'
+printf '%s' "$ghcr_token" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+unset ghcr_token
+```
+
+Keep SSH accessible in the provider firewall. The database has no published port, and HTTP is bound
+to `127.0.0.1:3000`. Telegram long polling needs outbound HTTPS; no domain or reverse proxy is required.
+On a 1 GB VPS, a small swap file can help with short memory spikes; monitor memory and disk usage.
+
+### Configure GitHub and deploy
+
+In repository Settings → Secrets and variables → Actions, add these repository secrets:
+
+| Secret               | Value                                                       |
+| -------------------- | ----------------------------------------------------------- |
+| `DEPLOY_HOST`        | VPS IPv4 address or hostname                                |
+| `DEPLOY_USER`        | `deploy`                                                    |
+| `DEPLOY_SSH_KEY`     | Contents of the dedicated private key `~/.ssh/astra-deploy` |
+| `DEPLOY_KNOWN_HOSTS` | Verified SSH host-key entry for the VPS                     |
+
+On your computer, obtain the candidate host key with `ssh-keyscan -t ed25519 YOUR_VPS_IP`.
+Compare its fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run through the
+provider's trusted console before saving the entry in `DEPLOY_KNOWN_HOSTS`. The workflow verifies
+this key rather than disabling SSH host verification. It currently uses SSH port 22.
+
+Enable GitHub Actions if disabled. Commit these deployment files and push to `main`, or select
+Actions → Deploy → Run workflow on `main`. The workflow publishes the images, copies the deployment
+scripts and Compose file to `/opt/astra-bot`, then runs [deploy.sh](deploy/deploy.sh).
+Stop any other instance using this Telegram bot token, including your local development process.
+
+If `/home/deploy/.ssh/github-actions` has already been generated on the VPS and authorized for
+the `deploy` user, [configure-github.sh](deploy/configure-github.sh) can set the four repository
+secrets directly from your computer, without displaying the private key. Authenticate with
+`gh auth login` first, verify the VPS host key, then run
+`bash deploy/configure-github.sh YOUR_VPS_IP YOUR_OWNER/YOUR_REPO`.
+This sets repository deployment secrets and requires permission to manage repository secrets.
+Repository secrets also work with private repositories on GitHub Free; deployment environments
+would require a paid plan for private repositories.
+Actions handles GHCR authentication automatically; manual registry deployments need the login above.
+
+For a first deployment without GHCR access, build both targets on your computer with
+`--platform linux/amd64` and tag them with the same full commit SHA and `-migrate` suffix.
+Transfer them using `docker save ... | gzip | ssh deploy@YOUR_VPS_IP 'gunzip | docker load'`,
+copy the production Compose and scripts to `/opt/astra-bot`, then run
+`bash deploy.sh ghcr.io/YOUR_OWNER/YOUR_REPO:FULL_COMMIT_SHA --loaded-images` on the VPS.
+This mode requires both images to be present locally; only PostgreSQL is pulled.
+
+Each deployment downloads images before stopping the bot, waits for PostgreSQL, stops the existing
+poller, makes a database dump, applies migrations, and starts one bot container. Commands are serialized
+by an on-server lock. The bot has a 120-second shutdown grace period and restarts after host reboot.
+The health check verifies HTTP startup, not ongoing Telegram polling or OpenAI availability.
+If a migration or startup fails, Actions fails and the bot remains stopped; inspect the failure
+before restarting anything.
+No automatic schema rollback or old-version restart is attempted after migrations.
+
+As `deploy` on the VPS, inspect the current successful release:
+
+```bash
+cd /opt/astra-bot
+set -a
+source .release.env
+set +a
+docker compose ps
+docker compose logs --tail 100 bot
+curl --fail http://127.0.0.1:3000/health
+```
+
+`.release.env` is written only after a healthy deployment. If the first deployment fails, set
+`export ASTRA_IMAGE=ghcr.io/YOUR_OWNER/YOUR_REPO:FULL_COMMIT_SHA` from the failed Actions run before
+using Compose. To retry a release, run `bash deploy.sh "$ASTRA_IMAGE"`.
+An older application image can be redeployed only if it is compatible with the current schema.
+Never use `docker compose down -v` on production: it deletes the database volume.
+
+### Backups and disk space
+
+Each deployment writes a private PostgreSQL custom-format dump under `/opt/astra-bot/backups`.
+For daily local backups, run `crontab -e` as `deploy` and add:
+
+```cron
+15 3 * * * /bin/bash /opt/astra-bot/backup.sh
+```
+
+[backup.sh](deploy/backup.sh) keeps approximately seven days of daily dumps; deployment dumps remain
+until manually removed. Copy dumps to your computer or separate storage regularly: local dumps alone
+do not protect against VPS loss. A computer-side download can use:
+
+```bash
+rsync -av -e 'ssh -i ~/.ssh/astra-deploy' deploy@YOUR_VPS_IP:/opt/astra-bot/backups/ ./astra-backups/
+```
+
+Treat dumps as private chat data. Test restoration into a separate database with `pg_restore` before
+relying on them. Container logs are rotated. Monitor `df -h` and `docker system df`; after a successful
+deployment, `docker image prune -a --filter 'until=168h'` can remove unused older images, including
+local rollback images. It does not remove volumes. GHCR image retention must also be managed separately.
+
 ## Conversation memory
 
 PostgreSQL stores `Conversation`, `Message`, and `ConversationSummary` through Prisma 7.

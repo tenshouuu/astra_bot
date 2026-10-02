@@ -1,0 +1,68 @@
+name: astra-bot
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: astra
+      POSTGRES_DB: astra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U astra -d astra"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot:
+    image: ${ASTRA_IMAGE:?Set ASTRA_IMAGE to a release image}
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    stop_grace_period: 120s
+    mem_limit: 384m
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health', {signal: AbortSignal.timeout(3000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    image: ${ASTRA_IMAGE:?Set ASTRA_IMAGE to a release image}-migrate
+    profiles: [tools]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+    mem_limit: 384m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

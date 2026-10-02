@@ -20,6 +20,9 @@ test.json
 *.tsbuildinfo
 .turbo
 coverage
+deploy/.release.env*
+deploy/.deploy.lock
+deploy/backups/
 .pnpm-store
 .venv-translate/
 

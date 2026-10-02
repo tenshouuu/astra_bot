@@ -1,0 +1,10 @@
+*
+!package.json
+!pnpm-lock.yaml
+!prisma.config.ts
+!tsconfig.json
+!tsconfig.build.json
+!src/
+!src/**
+!prisma/
+!prisma/**
