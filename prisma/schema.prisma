@@ -34,3 +34,60 @@ model ConversationSummary {
   throughId      BigInt       @default(0)
   version        Int          @default(0)
 }
+
+model ModerationParticipant {
+  chatId       BigInt
+  userId       BigInt
+  firstSeenAt  DateTime
+  messageCount Int      @default(0)
+
+  @@id([chatId, userId])
+}
+
+model ModerationMessage {
+  sourceId  String   @id
+  chatId    BigInt
+  userId    BigInt
+  messageId Int
+  topicId   Int      @default(0)
+  text      String
+  sentAt    DateTime
+
+  @@index([chatId, userId, sentAt])
+  @@index([sentAt])
+  @@index([chatId, topicId, sentAt])
+}
+
+model ModerationCase {
+  id                    String   @id @default(uuid())
+  updateId              Int      @unique
+  chatId                BigInt
+  userId                BigInt
+  messageId             Int
+  topicId               Int      @default(0)
+  action                String   @default("ban")
+  requestedBy           BigInt?
+  text                  String
+  replyText             String
+  authorLabel           String
+  isBot                 Boolean
+  firstSeenAt           DateTime
+  messageCount          Int
+  sentAt                DateTime
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  expiresAt             DateTime
+  status                String   @default("queued")
+  attempts              Int      @default(0)
+  availableAt           DateTime @default(now())
+  category              String?
+  reason                String?
+  notificationMessageId Int?
+  decidedBy             BigInt?
+  decidedAt             DateTime?
+
+  @@index([status, availableAt])
+  @@index([chatId, userId, status])
+  @@index([chatId, messageId, updateId])
+  @@index([expiresAt])
+}

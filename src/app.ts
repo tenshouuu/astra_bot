@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { AppConfig } from "@app/config/env";
 import { healthRoutes } from "@app/routes/health";
 import { meRoutes } from "@app/routes/me";
-import { getBotInfo } from "@app/modules/telegram/api";
+import { createGetBotInfo } from "@app/modules/telegram/api";
 import type { UserFromGetMe } from "grammy/types";
 
 export type AppDependencies = Readonly<{
@@ -13,7 +13,7 @@ export type AppDependencies = Readonly<{
 export function buildApp(
   config: AppConfig,
   dependencies: AppDependencies = {
-    getBotInfo: () => getBotInfo(config.botToken),
+    getBotInfo: createGetBotInfo(config.botToken),
   },
 ): FastifyInstance {
   const app = Fastify({ logger: { level: config.logLevel } });

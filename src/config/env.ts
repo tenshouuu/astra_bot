@@ -10,8 +10,12 @@ export type AppConfig = Readonly<{
   openaiApiKey: string;
   openaiModel: string;
   ownerUsername: string;
+  moderationEnabled?: boolean;
+  ownerUserId?: number;
+  protectedUserIds?: readonly number[];
   allowedChatUsername?: string | undefined;
   allowedChatId?: number | undefined;
+  allowedChatIds?: readonly number[];
 }>;
 
 const environments = new Set<AppConfig["nodeEnv"]>(["development", "test", "production"]);
@@ -50,19 +54,36 @@ function readRequiredString(name: string, value: string | undefined): string {
 }
 
 export function getConfig(): AppConfig {
-  const allowedChatUsername = process.env.ALLOWED_CHAT_USERNAME?.trim() || undefined;
-  const rawChatId = process.env.ALLOWED_CHAT_ID?.trim();
-  const allowedChatId = rawChatId ? Number(rawChatId) : undefined;
-  if (
-    rawChatId &&
-    (!/^-\d+$/.test(rawChatId) ||
-      !Number.isSafeInteger(allowedChatId) ||
-      allowedChatId === undefined ||
-      allowedChatId >= 0)
-  ) {
-    throw new Error("ALLOWED_CHAT_ID must be a negative safe integer");
+  const moderationValue = process.env.MODERATION_ENABLED ?? "false";
+  if (moderationValue !== "true" && moderationValue !== "false") {
+    throw new Error("MODERATION_ENABLED must be true or false");
   }
-  if (allowedChatId === undefined && !allowedChatUsername) {
+  const moderationEnabled = moderationValue === "true";
+  const protectedUserIds = (process.env.PROTECTED_USER_IDS?.trim() || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => readUserId("PROTECTED_USER_IDS", value)!);
+  const allowedChatUsername = process.env.ALLOWED_CHAT_USERNAME?.trim() || undefined;
+  const rawChatIds = process.env.ALLOWED_CHAT_ID?.trim();
+  const allowedChatIds = rawChatIds
+    ? [
+        ...new Set(
+          rawChatIds.split(",").map((entry) => {
+            const value = entry.trim();
+            const id = Number(value);
+            if (!/^-\d+$/.test(value) || !Number.isSafeInteger(id) || id >= 0) {
+              throw new Error(
+                "ALLOWED_CHAT_ID must contain comma-separated negative safe integers",
+              );
+            }
+            return id;
+          }),
+        ),
+      ]
+    : [];
+  const allowedChatId = allowedChatIds.length === 1 ? allowedChatIds[0] : undefined;
+  if (allowedChatIds.length === 0 && !allowedChatUsername) {
     throw new Error("ALLOWED_CHAT_ID or ALLOWED_CHAT_USERNAME must be defined");
   }
   return {
@@ -76,6 +97,18 @@ export function getConfig(): AppConfig {
     openaiModel: readRequiredString("OPENAI_MODEL", process.env.OPENAI_MODEL ?? "gpt-6-luna"),
     allowedChatUsername,
     allowedChatId,
+    allowedChatIds,
     ownerUsername: readRequiredString("OWNER_USERNAME", process.env.OWNER_USERNAME),
+    moderationEnabled,
+    protectedUserIds,
   };
+}
+
+function readUserId(name: string, raw: string | undefined): number | undefined {
+  if (!raw?.trim()) return undefined;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw.trim()) || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must contain positive safe integer Telegram user IDs`);
+  }
+  return value;
 }

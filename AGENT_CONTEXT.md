@@ -2,8 +2,9 @@
 
 ## Product
 
-Astra Bot is a Telegram group moderation service and an AI assistant. The initial AI assistant is
-available only to administrators. Moderation observes group messages and should escalate uncertain
+Astra Bot is a Telegram group moderation service and an AI assistant. The assistant answers current
+group members when addressed through `/ask`, a reply to its message, or a Telegram mention.
+Chat management is reserved for the owner/administrators. Moderation observes group messages and should escalate uncertain
 or suspicious cases to the owner in a private chat, offering an explicit ban or keep/unban action.
 
 ## Safety invariants
@@ -21,25 +22,46 @@ or suspicious cases to the owner in a private chat, offering an explicit ban or 
 ## Current implementation
 
 The service provides Fastify health and Telegram bot-info endpoints, Telegram long polling, and
-an OpenAI Responses API adapter. `/ask` is restricted to administrators of the configured group
-and the owner in private chat. It checks Telegram membership before requesting and before each
+an OpenAI Responses API adapter. `/ask`, replies to the bot, and mentions use one bounded request
+handler. Conversation access is available to current group members and the owner in private chat;
+management access is checked separately and `/reset` remains administrator/owner-only.
+Conversation responses cannot invoke moderation actions. Telegram membership is checked before requesting and before each
 answer chunk. AI requests run in bounded background jobs, with one active request per conversation;
 shutdown drains these jobs before closing memory and the database. `/reset` rejects active conversations.
 It limits input/output and pending requests, and handles provider failures without logging
-question or answer contents. PostgreSQL/Prisma persist text messages in the configured group and the
+question or answer contents. PostgreSQL/Prisma persist text messages in the configured groups and the
 owner's private chat, isolated by chat and topic. `/ask` includes bounded recent history and a background
 summary. Summarization allows two active jobs and a queue of 64 conversations; scheduling overflow
 is dropped until a later refresh, while messages remain persisted. `/reset` clears the current conversation. Raw messages expire after seven days. Moderation
-classifiers and owner action callbacks are not implemented.
+observes group text/captions and edits when explicitly enabled. A structured AI classifier considers
+bounded per-user group evidence, USDT offers, and disguised service promotion. Suspicious cases are
+sent privately to a numeric owner ID resolved from `OWNER_USERNAME` via Telegram group administrators with permanent-ban/keep callbacks; automatic enforcement
+is not implemented. PostgreSQL stores participant observation counts, seven-day raw evidence, review
+states, and durable audit metadata independently of conversation reset. Two analyses run at once with
+64 queued/running cases; overflow is audited and skipped. Received edits, including deletion of a media caption, invalidate old reviews and
+one active review is allowed per participant. Reviews expire after seven days. Startup resumes analyses
+but never repeats ambiguous notification/ban delivery. Owner permissions and target protections are
+checked immediately before each confirmed ban. Moderation requires the owner to start the private bot
+chat and both owner/bot to have moderation permissions. Telegram does not expose account age;
+first-seen metadata describes only this bot's observations.
 
 ## Intended module boundaries
 
 - `src/config/` — validated runtime configuration.
 - `src/routes/` — HTTP transport such as health checks and a future Telegram webhook.
-- Planned moderation module — deterministic policies, protection checks, decisions, and audit.
+- `src/modules/moderation/` — review workflow, bounded analysis jobs, decisions, and audit persistence.
 - `src/modules/openai/` — model adapters and character instructions.
 - `src/modules/memory/` — bounded history, summarization, and Prisma persistence.
 - `src/modules/telegram/` — Telegram transport, authorization, and memory capture.
 
 Dependency direction should point from transport into application/domain logic, with Telegram and AI
 SDKs behind adapters.
+
+`ALLOWED_CHAT_ID` accepts a comma-separated allowlist of negative group IDs (one ID is also supported).
+IDs take precedence over the public username fallback. Authorization and moderation share the same
+allowlist; assistant tools in a group remain scoped to its chat/topic. With multiple groups, owner-private
+tools require an explicit allowed chat ID, preventing implicit selection of a different group.
+
+Moderation startup resolves `OWNER_USERNAME` from allowed group administrators, requiring one unique
+account. Its numeric ID is fixed for that running bot and used for private delivery, protection, and
+confirmation checks. `OWNER_USER_ID` is no longer read from the environment.

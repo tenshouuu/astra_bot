@@ -2,23 +2,26 @@ import type { AppConfig } from "@app/config/env";
 import type { ConversationMemory } from "@app/modules/memory/service";
 import { contextMessage } from "@app/modules/memory/context";
 import type { ContextMessage } from "@app/modules/memory/types";
-import { canAsk } from "@app/modules/telegram/access";
+import { canAsk, canManageChat } from "@app/modules/telegram/access";
+import { addressedQuestion } from "@app/modules/telegram/address";
 import { conversationId, messageId, messageAuthor } from "@app/modules/telegram/memory";
 import type { Ask } from "@app/modules/openai/api";
-import type { CommandContext, Context } from "grammy";
+import type { AssistantRuntime } from "@app/modules/openai/tools";
+import type { CommandContext, Context, Filter } from "grammy";
 
 const MAX_QUESTION_LENGTH = 8000;
 const MESSAGE_CHUNK_SIZE = 3500;
 const COLLAPSIBLE_ANSWER_LENGTH = 1000;
+const COLLAPSIBLE_ANSWER_LINES = 12;
 const RECENT_UPDATE_LIMIT = 1000;
 const MAX_PENDING_REQUESTS = 8;
 
-type AskContext = CommandContext<Context>;
+type AskContext = CommandContext<Context> | Filter<Context, "message:text">;
 
-async function checkAccess(ctx: AskContext, config: AppConfig): Promise<boolean> {
+async function checkAccess(ctx: AskContext, config: AppConfig, manage = false): Promise<boolean> {
   let allowed: boolean;
   try {
-    allowed = await canAsk(ctx, config);
+    allowed = await (manage ? canManageChat(ctx, config) : canAsk(ctx, config));
   } catch {
     await ctx.reply("Не смогла проверить, могу ли я тебе отвечать. Попробуй ещё раз чуть позже.");
     return false;
@@ -26,14 +29,16 @@ async function checkAccess(ctx: AskContext, config: AppConfig): Promise<boolean>
 
   if (!allowed) {
     await ctx.reply(
-      "Пока я отвечаю только администраторам нашей группы, а владельцу — ещё и в личке.",
+      manage
+        ? "Управлять чатом могут только администраторы нашей группы, а владелец — ещё и в личке."
+        : "Я отвечаю участникам нашей группы, а владельцу — ещё и в личке.",
     );
   }
   return allowed;
 }
 
 function questionError(question: string): string | undefined {
-  if (!question) return "Я слушаю. Напиши вопрос после /ask.";
+  if (!question) return "Я слушаю. Напиши вопрос.";
   if (question.length > MAX_QUESTION_LENGTH) {
     return `Вопрос слишком длинный для одного сообщения. Сократи его до ${MAX_QUESTION_LENGTH} символов, и разберёмся.`;
   }
@@ -45,6 +50,7 @@ async function requestAnswer(
   ask: Ask,
   question: string,
   memory?: ConversationMemory,
+  tools?: (ctx: AskContext) => Promise<AssistantRuntime>,
 ): Promise<string | undefined> {
   await ctx.replyWithChatAction("typing").catch(() => undefined);
 
@@ -73,7 +79,7 @@ async function requestAnswer(
       );
     }
     context.push({ role: "user", content: JSON.stringify({ current_author: messageAuthor(ctx) }) });
-    return await ask(question, context);
+    return await ask(question, context, tools ? await tools(ctx) : undefined);
   } catch {
     console.error("AI request failed", { updateId: ctx.update.update_id });
     await ctx.reply("С ответом не вышло. Попробуй спросить ещё раз чуть позже.");
@@ -96,6 +102,9 @@ export function splitAnswer(text: string): string[] {
 }
 
 async function sendAnswer(ctx: AskContext, config: AppConfig, answer: string): Promise<boolean> {
+  const collapsible =
+    answer.length > COLLAPSIBLE_ANSWER_LENGTH ||
+    answer.split(/\r\n|\r|\n/u).length >= COLLAPSIBLE_ANSWER_LINES;
   for (const chunk of splitAnswer(answer)) {
     // Access may change between individual Telegram sends.
     if (!(await canAsk(ctx, config))) return false;
@@ -103,7 +112,7 @@ async function sendAnswer(ctx: AskContext, config: AppConfig, answer: string): P
     await ctx.reply(chunk, {
       reply_parameters: { message_id: ctx.msg.message_id },
       link_preview_options: { is_disabled: true },
-      ...(answer.length > COLLAPSIBLE_ANSWER_LENGTH
+      ...(collapsible
         ? {
             entities: [{ type: "expandable_blockquote" as const, offset: 0, length: chunk.length }],
           }
@@ -113,7 +122,12 @@ async function sendAnswer(ctx: AskContext, config: AppConfig, answer: string): P
   return true;
 }
 
-export function createAskHandler(config: AppConfig, ask: Ask, memory?: ConversationMemory) {
+export function createAskHandler(
+  config: AppConfig,
+  ask: Ask,
+  memory?: ConversationMemory,
+  tools?: (ctx: AskContext) => Promise<AssistantRuntime>,
+) {
   const pendingRequests = new Set<string>();
   const recentUpdates = new Set<number>();
   const jobs = new Map<string, Promise<void>>();
@@ -134,12 +148,18 @@ export function createAskHandler(config: AppConfig, ask: Ask, memory?: Conversat
     return false;
   }
 
-  const handler = async (ctx: AskContext): Promise<void> => {
+  const handleQuestion = async (ctx: AskContext, question: string): Promise<void> => {
     if (closing) return;
     if (isDuplicate(ctx.update.update_id)) return;
+    if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
+      console.info("Telegram assistant request received", {
+        chatId: ctx.chat.id,
+        chatType: ctx.chat.type,
+        updateId: ctx.update.update_id,
+      });
+    }
     if (!(await checkAccess(ctx, config))) return;
 
-    const question = ctx.match.trim();
     const validationError = questionError(question);
     if (validationError) {
       await ctx.reply(validationError);
@@ -165,7 +185,7 @@ export function createAskHandler(config: AppConfig, ask: Ask, memory?: Conversat
 
     pendingRequests.add(requestKey);
     const job = (async () => {
-      const answer = await requestAnswer(ctx, ask, question, memory);
+      const answer = await requestAnswer(ctx, ask, question, memory, tools);
       if (answer === undefined) return;
 
       if (!(await sendAnswer(ctx, config, answer))) return;
@@ -191,7 +211,12 @@ export function createAskHandler(config: AppConfig, ask: Ask, memory?: Conversat
     jobs.set(scope, job);
   };
 
+  const handler = (ctx: CommandContext<Context>) => handleQuestion(ctx, ctx.match.trim());
   return Object.assign(handler, {
+    addressed: async (ctx: Filter<Context, "message:text">) => {
+      const question = addressedQuestion(ctx);
+      if (question !== undefined) await handleQuestion(ctx, question);
+    },
     waitForRequests,
     isPending: (scope: string) => jobs.has(scope),
     close: async () => {
@@ -207,7 +232,7 @@ export function createResetHandler(
   isPending: (scope: string) => boolean,
 ) {
   return async (ctx: AskContext): Promise<void> => {
-    if (!(await checkAccess(ctx, config))) return;
+    if (!(await checkAccess(ctx, config, true))) return;
     if (isPending(conversationId(ctx))) {
       await ctx.reply("Дай мне сначала закончить ответ, а потом начнём с чистого листа.");
       return;

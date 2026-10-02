@@ -1,6 +1,7 @@
 import type { AppConfig } from "@app/config/env";
 import type { ConversationMemory } from "@app/modules/memory/service";
 import { isMemoryChat } from "@app/modules/telegram/access";
+import { addressedQuestion } from "@app/modules/telegram/address";
 import type { Context, MiddlewareFn } from "grammy";
 
 export function conversationId(ctx: Context): string {
@@ -41,11 +42,11 @@ export function captureMessages(
       await next();
       return;
     }
-    // Commands are handled explicitly; ordinary text contributes group/private context.
+    // Assistant requests record their normalized question in the shared ask handler.
     const command = message.entities?.find(
       (entity) => entity.offset === 0 && entity.type === "bot_command",
     );
-    if (command) {
+    if (command || (ctx.has("message:text") && addressedQuestion(ctx) !== undefined)) {
       await next();
       return;
     }

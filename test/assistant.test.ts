@@ -67,11 +67,11 @@ function setup(
   const replyEntities: (MessageEntity[] | undefined)[] = [];
   let checks = 0;
   bot.api.config.use(async (_previous, method, payload) => {
-    if (method === "getChatMember") {
+    if (method === "getChatMember" && "user_id" in payload) {
       const status = statuses[Math.min(checks++, statuses.length - 1)];
       return {
         ok: true,
-        result: { status, user: { id: 2, is_bot: false, first_name: "Test" } },
+        result: { status, user: { id: payload.user_id, is_bot: false, first_name: "Test" } },
       } as never;
     }
     if (method === "sendMessage" && "text" in payload) {
@@ -114,17 +114,15 @@ void test("ask quotes long plain text with UTF-16 entity lengths and leaves shor
   }
 });
 
-void test("ask rejects ordinary members without calling OpenAI", async () => {
-  const { bot, replies } = setup(async () => {
-    assert.fail("Unauthorized request");
-  }, ["member"]);
+void test("ask allows ordinary group members to converse without granting moderation actions", async () => {
+  const { bot, replies } = setup(async () => "answer", ["member"]);
   await bot.handleUpdate(update("/ask question"));
   await bot.waitForRequests();
-  assert.match(replies[0] ?? "", /администраторам нашей группы/);
+  assert.deepEqual(replies, ["answer"]);
 });
 
-void test("ask suppresses output when administrator access is revoked", async () => {
-  const { bot, replies } = setup(async () => "answer", ["administrator", "member"]);
+void test("ask suppresses output when group membership is revoked", async () => {
+  const { bot, replies } = setup(async () => "answer", ["member", "left"]);
   await bot.handleUpdate(update("/ask question"));
   await bot.waitForRequests();
   assert.deepEqual(replies, []);
@@ -347,9 +345,9 @@ void test("Telegram does not capture text from an unauthorized private chat", as
   await bot.waitForRequests();
 });
 
-void test("ask authorizes closed groups by ID and still requires administrator access", async () => {
+void test("ask authorizes closed groups by ID and requires current membership", async () => {
   for (const type of ["group", "supergroup"] as const) {
-    for (const status of ["administrator", "member"] as const) {
+    for (const status of ["administrator", "member", "left", "kicked"] as const) {
       let calls = 0;
       const { bot, replies } = setup(
         async () => {
@@ -365,7 +363,7 @@ void test("ask authorizes closed groups by ID and still requires administrator a
       request.message.chat = { id: -100, type, title: "Closed group" };
       await bot.handleUpdate(request);
       await bot.waitForRequests();
-      assert.equal(calls, status === "administrator" ? 1 : 0);
+      assert.equal(calls, status === "administrator" || status === "member" ? 1 : 0);
       assert.equal(replies.length, 1);
     }
   }
@@ -385,10 +383,7 @@ void test("configured group ID takes precedence over a matching username", async
 });
 
 void test("ask stops chunk delivery when access is revoked between sends", async () => {
-  const { bot, replies } = setup(
-    async () => "a".repeat(7001),
-    ["administrator", "administrator", "member"],
-  );
+  const { bot, replies } = setup(async () => "a".repeat(7001), ["member", "member", "left"]);
   await bot.handleUpdate(update("/ask question"));
   await bot.waitForRequests();
   assert.deepEqual(replies, ["a".repeat(3500)]);
@@ -439,4 +434,306 @@ void test("ask bounds background requests across conversations", async () => {
 
   for (const release of releases) release("answer");
   await bot.closeRequests();
+});
+
+function ordinaryUpdate(text: string, updateId = 1): Update {
+  const request = update(text);
+  request.update_id = updateId;
+  assert.ok(request.message);
+  request.message.entities = [];
+  return request;
+}
+
+void test("replies to this bot trigger an answer for members and include the quoted message", async () => {
+  const { bot, replies } = setup(
+    async (question, context) => {
+      assert.equal(question, "А подробнее?");
+      assert.match(context?.[0]?.content ?? "", /Предыдущий ответ Астры/);
+      return "Подробнее";
+    },
+    ["member"],
+  );
+  const request = ordinaryUpdate("А подробнее?");
+  assert.ok(request.message);
+  request.message.reply_to_message = {
+    message_id: 9,
+    date: 0,
+    chat: request.message.chat,
+    from: { id: 42, is_bot: true, first_name: "Astra", username: "test_bot" },
+    text: "Предыдущий ответ Астры",
+  } as unknown as NonNullable<typeof request.message.reply_to_message>;
+  await bot.handleUpdate(request);
+  await bot.waitForRequests();
+  assert.deepEqual(replies, ["Подробнее"]);
+});
+
+void test("bot mentions use Telegram entities, support UTF-16 offsets and remove only addressed mentions", async () => {
+  const questions: string[] = [];
+  const { bot, replies } = setup(
+    async (question) => {
+      questions.push(question);
+      return "answer";
+    },
+    ["member"],
+  );
+  const request = ordinaryUpdate("😀 @TeSt_BoT объясни @someone");
+  assert.ok(request.message);
+  request.message.entities = [
+    { type: "mention", offset: 3, length: 9 },
+    { type: "mention", offset: 21, length: 8 },
+  ];
+  await bot.handleUpdate(request);
+  await bot.waitForRequests();
+
+  const byId = ordinaryUpdate("Астра, помоги", 2);
+  assert.ok(byId.message);
+  byId.message.entities = [
+    {
+      type: "text_mention",
+      offset: 0,
+      length: 5,
+      user: { id: 42, is_bot: true, first_name: "Astra" },
+    },
+  ];
+  await bot.handleUpdate(byId);
+  await bot.waitForRequests();
+  assert.deepEqual(questions, ["😀  объясни @someone", ", помоги"]);
+  assert.deepEqual(replies, ["answer", "answer"]);
+});
+
+void test("ordinary messages, other mentions, other replies and unrelated commands remain silent", async () => {
+  const { bot, replies } = setup(async () => assert.fail("Not addressed to this bot"), ["member"]);
+  const requests = [
+    ordinaryUpdate("Обычное обсуждение", 1),
+    ordinaryUpdate("name@test_bot.example и https://example.test/@test_bot", 2),
+    ordinaryUpdate("@another_bot вопрос", 3),
+    ordinaryUpdate("/other @test_bot вопрос", 4),
+    ordinaryUpdate("Ответ человеку", 5),
+  ];
+  assert.ok(requests[2]?.message);
+  requests[2].message.entities = [{ type: "mention", offset: 0, length: 12 }];
+  assert.ok(requests[3]?.message);
+  requests[3].message.entities = [
+    { type: "bot_command", offset: 0, length: 6 },
+    { type: "mention", offset: 7, length: 9 },
+  ];
+  assert.ok(requests[4]?.message);
+  requests[4].message.reply_to_message = {
+    message_id: 9,
+    date: 0,
+    chat: requests[4].message.chat,
+    from: { id: 99, is_bot: false, first_name: "Test" },
+    text: "Чужое сообщение",
+  } as unknown as NonNullable<NonNullable<Update["message"]>["reply_to_message"]>;
+  for (const request of requests) await bot.handleUpdate(request);
+  await bot.waitForRequests();
+  assert.deepEqual(replies, []);
+});
+
+void test("reply and mention triggers still deny other chats, bots and anonymous senders", async () => {
+  let calls = 0;
+  const { bot } = setup(async () => {
+    calls++;
+    return "answer";
+  }, ["member"]);
+  for (const scope of ["private", "other-group", "bot", "anonymous"] as const) {
+    const request = ordinaryUpdate("@test_bot вопрос");
+    assert.ok(request.message?.from);
+    request.update_id = { private: 1, "other-group": 2, bot: 3, anonymous: 4 }[scope];
+    request.message.entities = [{ type: "mention", offset: 0, length: 9 }];
+    if (scope === "private") request.message.chat = { id: 2, type: "private", first_name: "Test" };
+    if (scope === "other-group") {
+      request.message.chat = {
+        id: -200,
+        type: "supergroup",
+        title: "Other",
+        username: "other_group",
+      };
+    }
+    if (scope === "bot") request.message.from.is_bot = true;
+    if (scope === "anonymous") request.message.sender_chat = request.message.chat;
+    await bot.handleUpdate(request);
+    await bot.waitForRequests();
+  }
+  assert.equal(calls, 0);
+});
+
+void test("reset remains restricted to administrators while members can ask", async () => {
+  let resets = 0;
+  const memory: ConversationMemory = {
+    record: async () => undefined,
+    context: async () => [],
+    refresh: () => undefined,
+    reset: async () => {
+      resets++;
+    },
+    prune: async () => undefined,
+    close: async () => undefined,
+  };
+  const { bot, replies } = setup(async () => "answer", ["member"], memory);
+  const reset = update("/reset");
+  assert.ok(reset.message?.entities?.[0]);
+  reset.message.entities[0].length = 6;
+  await bot.handleUpdate(reset);
+  await bot.waitForRequests();
+  assert.equal(resets, 0);
+  assert.match(replies[0] ?? "", /только администраторы/);
+});
+
+void test("addressed questions use shared request limits and record memory once", async () => {
+  const recorded: NewMessage[] = [];
+  const memory: ConversationMemory = {
+    record: async (message) => {
+      recorded.push(message);
+    },
+    context: async () => [],
+    refresh: () => undefined,
+    reset: async () => undefined,
+    prune: async () => undefined,
+    close: async () => undefined,
+  };
+  let release!: (answer: string) => void;
+  const { bot, replies } = setup(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    ["member"],
+    memory,
+  );
+  const request = ordinaryUpdate("@test_bot вопрос");
+  assert.ok(request.message);
+  request.message.entities = [{ type: "mention", offset: 0, length: 9 }];
+  await bot.handleUpdate(request);
+  await bot.handleUpdate({ ...request, update_id: 2 });
+  assert.match(replies[0] ?? "", /предыдущим вопросом/);
+  release("answer");
+  await bot.closeRequests();
+  assert.equal(recorded.filter((item) => item.role === "user").length, 1);
+  assert.equal(recorded[0]?.text, "вопрос");
+});
+
+void test("chatid reports an unconfigured group ID without invoking the assistant", async () => {
+  const { bot, replies } = setup(
+    async () => assert.fail("Chat ID lookup must not invoke AI"),
+    [],
+    undefined,
+    { ...config, allowedChatIds: [-200, -300], allowedChatId: undefined },
+  );
+  const request = update("/chatid");
+  if (!request.message?.entities?.[0]) assert.fail("Missing command");
+  request.message.entities[0].length = 7;
+  await bot.handleUpdate(request);
+  assert.deepEqual(replies, ["ID этого чата: -100"]);
+});
+
+void test("logs bot membership changes in unconfigured groups without invoking AI or replying", async (t) => {
+  const log = t.mock.method(console, "info", () => undefined);
+  const { bot, replies } = setup(async () => assert.fail("Membership event must not invoke AI"));
+  const user = { id: 42, is_bot: true, first_name: "Synthetic bot" };
+  await bot.handleUpdate({
+    update_id: 90,
+    my_chat_member: {
+      chat: { id: -200, type: "group", title: "Synthetic closed group" },
+      from: { id: 1, is_bot: false, first_name: "Synthetic owner" },
+      date: 1,
+      old_chat_member: { status: "left", user },
+      new_chat_member: { status: "member", user },
+    },
+  });
+  assert.deepEqual(log.mock.calls[0]?.arguments, [
+    "Telegram bot chat membership changed",
+    { chatId: -200, chatType: "group", oldStatus: "left", newStatus: "member" },
+  ]);
+  assert.deepEqual(replies, []);
+});
+
+void test("ask logs an unconfigured group ID before denying access without logging question text", async (t) => {
+  const log = t.mock.method(console, "info", () => undefined);
+  const { bot } = setup(
+    async () => assert.fail("Unconfigured group must not invoke AI"),
+    [],
+    undefined,
+    { ...config, allowedChatIds: [-200] },
+  );
+  await bot.handleUpdate(update("/ask Synthetic private question"));
+  assert.deepEqual(log.mock.calls[0]?.arguments, [
+    "Telegram assistant request received",
+    { chatId: -100, chatType: "supergroup", updateId: 1 },
+  ]);
+});
+
+void test("literal exact bot tags without entities trigger greetings while similar usernames and code remain silent", async () => {
+  const questions: string[] = [];
+  const { bot, replies } = setup(
+    async (question) => {
+      questions.push(question);
+      return "Привет!";
+    },
+    ["member"],
+  );
+  for (const [index, text] of [
+    "@test_bot привет",
+    "Привет, @TEST_BOT!",
+    "😀 @test_bot привет",
+    "@test_bot_other привет",
+    "name@test_bot привет",
+  ].entries()) {
+    await bot.handleUpdate(ordinaryUpdate(text, index + 30));
+    await bot.waitForRequests();
+  }
+  const code = ordinaryUpdate("@test_bot привет", 40);
+  assert.ok(code.message);
+  code.message.entities = [{ type: "code", offset: 0, length: 9 }];
+  await bot.handleUpdate(code);
+  await bot.waitForRequests();
+  assert.deepEqual(questions, ["привет", "Привет, !", "😀  привет"]);
+  assert.equal(replies.length, 3);
+});
+
+void test("long underscored bot username mentions are logged before routing and reach the assistant", async (t) => {
+  const log = t.mock.method(console, "info", () => undefined);
+  const questions: string[] = [];
+  const { bot, replies } = setup(
+    async (question) => {
+      questions.push(question);
+      return "Мониторинг настраивается через конфигурацию.";
+    },
+    ["member"],
+  );
+  bot.botInfo = { ...bot.botInfo, username: "synthetic_in_your_mindbot" };
+  for (const withEntity of [false, true]) {
+    const request = ordinaryUpdate(
+      "@synthetic_in_your_mindbot включи мониторинг",
+      withEntity ? 92 : 91,
+    );
+    assert.ok(request.message);
+    if (withEntity) request.message.entities = [{ type: "mention", offset: 0, length: 26 }];
+    await bot.handleUpdate(request);
+    await bot.waitForRequests();
+  }
+  assert.deepEqual(questions, ["включи мониторинг", "включи мониторинг"]);
+  assert.equal(replies.length, 2);
+  const received = log.mock.calls.filter(
+    (call) => call.arguments[0] === "Telegram mention message received",
+  );
+  assert.equal(received.length, 2);
+  assert.equal(received[0]?.arguments[1].addressedToBot, true);
+});
+
+void test("tall answers collapse by line count including blank lines and CRLF while shorter answers stay plain", async () => {
+  for (const [answer, collapsed] of [
+    [Array(11).fill("Короткая строка").join("\n"), false],
+    [Array(12).fill("Короткая строка").join("\n"), true],
+    [Array(6).fill("😀 пункт").join("\n\n") + "\n", true],
+    [Array(12).fill("😀").join("\r\n"), true],
+  ] as const) {
+    const { bot, replies, replyEntities } = setup(async () => answer, ["member"]);
+    await bot.handleUpdate(update("/ask question"));
+    await bot.waitForRequests();
+    assert.deepEqual(replies, [answer]);
+    assert.deepEqual(replyEntities, [
+      collapsed ? [{ type: "expandable_blockquote", offset: 0, length: answer.length }] : undefined,
+    ]);
+  }
 });
