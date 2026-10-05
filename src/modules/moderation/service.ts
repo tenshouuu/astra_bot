@@ -13,6 +13,7 @@ export interface ModerationActions {
   eligibility(item: ReviewCase): Promise<Eligibility>;
   notify(item: ReviewCase): Promise<number | undefined>;
   ban(item: ReviewCase, current: () => Promise<boolean>): Promise<Eligibility>;
+  announceBan?(item: ReviewCase): Promise<boolean>;
   deleteMessage?(item: ReviewCase, current: () => Promise<boolean>): Promise<Eligibility>;
 }
 
@@ -179,13 +180,28 @@ export function createModeration(
         await transition(item, outcome === "protected" ? "protected" : "failed");
         return "Действие недоступно: участник защищён, срок удаления истёк или права изменились.";
       }
-      await transition(item, action === "delete" ? "deleted" : "banned");
-      return action === "delete" ? "Сообщение удалено." : "Участник забанен навсегда.";
+      if (!(await transition(item, action === "delete" ? "deleted" : "banned"))) {
+        return "Telegram подтвердил действие, но статус заявки изменился. Проверь результат; повторно действие не отправляю.";
+      }
     } catch {
       console.error("Moderation action outcome uncertain", { caseId: item.id });
       await transition(item, "unknown");
       return "Не удалось подтвердить результат. Проверь сообщение или статус участника в Telegram; повторное действие не отправляю.";
     }
+
+    if (action === "delete") return "Сообщение удалено.";
+    const confirmation =
+      "Готово: участника забанила навсегда, его сообщения в этой группе удалила.";
+    // Persist the ban first; failed or ambiguous announcements must never trigger another ban/send.
+    if (actions.announceBan) {
+      try {
+        if (await actions.announceBan(item)) return confirmation;
+      } catch {
+        console.warn("Moderation ban announcement failed", { caseId: item.id });
+      }
+      return `${confirmation} Не удалось подтвердить отправку объявления в чат; повторять его не буду.`;
+    }
+    return confirmation;
   }
 
   async function requestReview(

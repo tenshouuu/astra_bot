@@ -41,7 +41,13 @@ states, and durable audit metadata independently of conversation reset. Two anal
 64 queued/running cases; overflow is audited and skipped. Received edits, including deletion of a media caption, invalidate old reviews and
 one active review is allowed per participant. Reviews expire after seven days. Startup resumes analyses
 but never repeats ambiguous notification/ban delivery. Owner permissions and target protections are
-checked immediately before each confirmed ban. Moderation requires the owner to start the private bot
+checked immediately before each confirmed ban. Bans explicitly revoke only the target participant's
+messages in the group. After persisting success, the bot attempts one silent, varied announcement
+in the source topic, without identities or evidence; announcement failure never retries the ban.
+Announcement text is generated using the shared Astra character and only the confirmed action,
+with two concurrent requests at most, a 10-second timeout, no retries, and a short fallback phrase.
+Owner permissions are rechecked after generation and before sending.
+Moderation requires the owner to start the private bot
 chat and both owner/bot to have moderation permissions. Telegram does not expose account age;
 first-seen metadata describes only this bot's observations.
 

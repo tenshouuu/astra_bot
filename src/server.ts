@@ -9,6 +9,7 @@ import { createAsk, createSummarize } from "@app/modules/openai/api";
 import { createBot } from "@app/modules/telegram/bot";
 import { createClassify } from "@app/modules/openai/moderation";
 import { createModerationStore } from "@app/modules/moderation/store";
+import { createBanAnnouncement } from "@app/modules/openai/ban-announcement";
 
 const config = getConfig();
 const getBotInfo = createGetBotInfo(config.botToken);
@@ -20,7 +21,11 @@ const bot = createBot(
   createAsk(config),
   memory,
   config.moderationEnabled
-    ? { store: createModerationStore(database), classify: createClassify(config) }
+    ? {
+        store: createModerationStore(database),
+        classify: createClassify(config),
+        generateBanAnnouncement: createBanAnnouncement(config),
+      }
     : undefined,
 );
 const cleanupTimer = setInterval(

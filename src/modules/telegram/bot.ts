@@ -19,7 +19,11 @@ export function createBot(
   config: AppConfig,
   ask: Ask,
   memory?: ConversationMemory,
-  review?: { store: ModerationStore; classify: Classify },
+  review?: {
+    store: ModerationStore;
+    classify: Classify;
+    generateBanAnnouncement?: () => Promise<string>;
+  },
 ) {
   const botConfig = { ...config };
   const bot = new Bot(botConfig.botToken, { client: { timeoutSeconds: 15 } });
@@ -31,7 +35,7 @@ export function createBot(
       ? createModeration(
           review.store,
           review.classify,
-          createModerationActions(botConfig, bot.api),
+          createModerationActions(botConfig, bot.api, review.generateBanAnnouncement),
           () => botConfig.ownerUserId,
         )
       : undefined;

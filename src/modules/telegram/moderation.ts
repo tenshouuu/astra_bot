@@ -34,30 +34,30 @@ export function reviewText(item: ReviewCase): string {
     sourceLink,
     item.action === "delete"
       ? "Удаление требует твоего подтверждения и доступно в пределах срока Telegram (обычно 48 часов)."
-      : "Решить можно в течение 7 дней. Бан — навсегда; в супергруппе Telegram также удаляет сообщения участника.",
+      : "Решить можно в течение 7 дней. Бан — навсегда, с удалением всех сообщений этого участника в этой группе. Сообщения остальных останутся.",
   ].join("\n\n");
 }
 
-export function createModerationActions(config: AppConfig, api: ModerationApi): ModerationActions {
+export function createModerationActions(
+  config: AppConfig,
+  api: ModerationApi,
+  generateBanAnnouncement?: () => Promise<string>,
+): ModerationActions {
   const protectedIds = new Set(config.protectedUserIds ?? []);
   if (config.ownerUserId !== undefined) protectedIds.add(config.ownerUserId);
 
-  const eligibility: ModerationActions["eligibility"] = async (item) => {
-    if (!config.moderationEnabled || config.ownerUserId === undefined) return "denied";
-    if (item.action === "delete" && item.sentAt.getTime() <= Date.now() - 48 * 60 * 60 * 1000)
-      return "denied";
-    if (Number(item.userId) === config.ownerUserId || protectedIds.has(Number(item.userId)))
-      return "protected";
+  async function canModerate(item: ReviewCase): Promise<boolean> {
+    if (!config.moderationEnabled || config.ownerUserId === undefined) return false;
     const chat = await api.getChat(Number(item.chatId));
-    if (!isAllowedGroup(chat, config) || chat.id !== Number(item.chatId)) return "denied";
+    if (!isAllowedGroup(chat, config) || chat.id !== Number(item.chatId)) return false;
 
     const owner = await api.getChatMember(Number(item.chatId), config.ownerUserId);
-    if (owner.user.id !== config.ownerUserId) return "denied";
+    if (owner.user.id !== config.ownerUserId) return false;
     if (owner.status !== "creator" && owner.status !== "administrator") {
       console.warn("Moderation owner is not a group administrator", {
         chatId: item.chatId.toString(),
       });
-      return "denied";
+      return false;
     }
     if (
       owner.status === "administrator" &&
@@ -67,8 +67,17 @@ export function createModerationActions(config: AppConfig, api: ModerationApi): 
         chatId: item.chatId.toString(),
         action: item.action ?? "ban",
       });
-      return "denied";
+      return false;
     }
+    return true;
+  }
+
+  const eligibility: ModerationActions["eligibility"] = async (item) => {
+    if (item.action === "delete" && item.sentAt.getTime() <= Date.now() - 48 * 60 * 60 * 1000)
+      return "denied";
+    if (Number(item.userId) === config.ownerUserId || protectedIds.has(Number(item.userId)))
+      return "protected";
+    if (!(await canModerate(item))) return "denied";
 
     const target = await api.getChatMember(Number(item.chatId), Number(item.userId));
     if (target.user.id !== Number(item.userId)) return "denied";
@@ -111,8 +120,26 @@ export function createModerationActions(config: AppConfig, api: ModerationApi): 
       const allowed = await eligibility(item);
       if (allowed !== "allowed") return allowed;
       if (!(await current())) return "denied";
-      await api.banChatMember(Number(item.chatId), Number(item.userId));
+      await api.banChatMember(Number(item.chatId), Number(item.userId), { revoke_messages: true });
       return "allowed";
+    },
+    async announceBan(item) {
+      if (item.status !== "banned" || !(await canModerate(item))) return false;
+      let text = "С этим разобралась, сообщения забаненного участника убрала. Продолжаем разговор.";
+      if (generateBanAnnouncement) {
+        try {
+          text = await generateBanAnnouncement();
+        } catch {
+          console.warn("Ban announcement generation failed", { caseId: item.id });
+        }
+      }
+      // Permissions may change while the model is generating its reply.
+      if (!(await canModerate(item))) return false;
+      await api.sendMessage(Number(item.chatId), text, {
+        ...(item.topicId ? { message_thread_id: item.topicId } : {}),
+        disable_notification: true,
+      });
+      return true;
     },
     async deleteMessage(item, current) {
       const allowed = await eligibility(item);

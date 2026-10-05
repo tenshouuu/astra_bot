@@ -265,8 +265,17 @@ History begins when moderation is enabled; existing conversation memory is not i
 
 Suspicious cases produce a private notification with an excerpt, a source link where available,
 the AI explanation, and **Ban permanently** / **Keep** buttons. No automatic bans, mutes, or message
-deletions are performed. A confirmed permanent ban uses Telegram's `banChatMember`; in supergroups,
-Telegram also deletes the banned participant's messages. Administrators, the owner, and configured
+deletions are performed. A confirmed permanent ban uses Telegram's `banChatMember` with
+`revoke_messages: true`, deleting only the banned participant's messages across this group.
+After the successful ban is saved, Astra posts a short, varied announcement in the source topic
+(or the group for messages without a topic), without naming the participant or quoting the evidence.
+Each announcement is generated with Astra's shared character instructions using `OPENAI_MODEL`.
+Only the confirmed action is supplied, without names, message evidence, or conversation history.
+Generation is limited to two concurrent requests, 10 seconds, 1024 output tokens, and 300 characters,
+without retries. On failure or overload, a short fixed phrase is used instead.
+Announcements are sent silently and attempted once; a failed announcement does not undo the ban
+or cause a retry, and the owner receives a private notice. A crash after saving the ban may omit the
+announcement. Administrators, the owner, and configured
 protected users cannot be recommended for a ban or banned. Actor permissions and target protection
 are checked again immediately before the Telegram action. Anonymous/channel senders are excluded
 because they cannot be safely treated as user accounts.
