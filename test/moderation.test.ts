@@ -93,6 +93,11 @@ function setup(
     ownerStatus: "creator",
     banFails: false,
     bans: 0,
+    deletions: 0,
+    deletionFails: false,
+    messagePresent: true,
+    targetStatusAfterBan: "member",
+    ownerStatusAfterBan: "creator",
     announcementFails: false,
     announcements: 0,
     demoteOwnerAfterBan: false,
@@ -147,10 +152,25 @@ function setup(
       assert.equal("until_date" in payload, false);
       assert.ok("revoke_messages" in payload && payload.revoke_messages === true);
       if (state.banFails) throw new Error("Synthetic timeout");
+      state.targetStatus = state.targetStatusAfterBan;
+      state.ownerStatus = state.ownerStatusAfterBan;
       if (state.demoteOwnerAfterBan) state.ownerStatus = "member";
     }
-    if (method === "deleteMessage" || method === "deleteMessages")
-      assert.fail("Ban must use per-user revocation, not delete chat messages individually");
+    if (method === "deleteMessages") {
+      state.deletions++;
+      assert.ok("chat_id" in payload && "message_ids" in payload);
+      assert.equal(payload.chat_id, config.allowedChatId);
+      const item = [...cases.values()].find(
+        (candidate) => candidate.messageId === payload.message_ids[0],
+      );
+      assert.ok(item);
+      assert.equal(item.status, "banned");
+      assert.equal(item.userId, 2n);
+      assert.deepEqual(payload.message_ids, [item.messageId]);
+      if (state.deletionFails) throw new Error("Synthetic deletion failure");
+      state.messagePresent = false;
+    }
+    if (method === "deleteMessage") assert.fail("Unexpected individual deletion");
     return { ok: true, result: true } as never;
   });
   return { bot, store, cases, sent, state };
@@ -172,6 +192,8 @@ void test("advertising only sends an owner review; confirmation bans once across
   assert.equal(sent.length, 1);
   await Promise.all([bot.handleUpdate(callback(item)), bot.handleUpdate(callback(item))]);
   assert.equal(state.bans, 1);
+  assert.equal(state.deletions, 1);
+  assert.equal(state.messagePresent, false);
   assert.equal(item.status, "banned");
   assert.equal(item.decidedBy, 1n);
   assert.equal(state.announcements, 1);
@@ -276,7 +298,7 @@ void test("ban announcements stay in the source topic and vary between confirmed
   }
 });
 
-void test("basic groups also revoke the banned user's messages", async () => {
+void test("basic groups also explicitly remove the banned user's source message", async () => {
   const { bot, cases, state } = setup();
   state.chatType = "group";
   const update = message();
@@ -287,9 +309,76 @@ void test("basic groups also revoke the banned user's messages", async () => {
     await bot.waitForRequests();
     await bot.handleUpdate(callback([...cases.values()][0]!));
     assert.equal(state.bans, 1);
+    assert.equal(state.deletions, 1);
+    assert.equal(state.messagePresent, false);
     assert.equal(state.announcements, 1);
   } finally {
     await bot.closeRequests();
+  }
+});
+
+void test("cleanup failure preserves the confirmed ban and reports no deletion success", async () => {
+  const { bot, cases, sent, state } = setup();
+  try {
+    await bot.handleUpdate(message());
+    await bot.waitForRequests();
+    const item = [...cases.values()][0]!;
+    state.deletionFails = true;
+    state.generationFails = true;
+    await bot.handleUpdate(callback(item));
+    assert.equal(item.status, "banned");
+    assert.equal(state.messagePresent, true);
+    assert.match(
+      sent.at(-1)!.text,
+      /забанила навсегда.*Удаление исходного сообщения подтвердить не удалось/s,
+    );
+    const announcement = sent.find((entry) => entry.chatId === config.allowedChatId)!;
+    assert.doesNotMatch(announcement.text, /удалила|убрала|очистила/);
+    await bot.handleUpdate(callback(item));
+    assert.equal(state.bans, 1);
+    assert.equal(state.deletions, 1);
+    assert.equal(state.announcements, 1);
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("cleanup accepts a kicked target and a source already removed by revocation", async () => {
+  const { bot, cases, sent, state } = setup();
+  try {
+    await bot.handleUpdate(message());
+    await bot.waitForRequests();
+    state.targetStatusAfterBan = "kicked";
+    state.messagePresent = false;
+    await bot.handleUpdate(callback([...cases.values()][0]!));
+    assert.equal(state.deletions, 1);
+    assert.match(sent.at(-1)!.text, /исходного сообщения в чате больше нет/);
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("cleanup rechecks protection, delete rights, and Telegram's message age limit", async () => {
+  for (const scenario of ["promoted", "owner-demoted", "delete-rights-lost", "old"] as const) {
+    const { bot, cases, sent, state } = setup();
+    try {
+      const update = message();
+      assert.ok(update.message);
+      if (scenario === "old") update.message.date -= 49 * 60 * 60;
+      await bot.handleUpdate(update);
+      await bot.waitForRequests();
+      if (scenario === "promoted") state.targetStatusAfterBan = "administrator";
+      if (scenario === "owner-demoted") state.demoteOwnerAfterBan = true;
+      if (scenario === "delete-rights-lost") state.ownerStatusAfterBan = "administrator";
+      const item = [...cases.values()][0]!;
+      await bot.handleUpdate(callback(item));
+      assert.equal(item.status, "banned");
+      assert.equal(state.bans, 1);
+      assert.equal(state.deletions, 0);
+      assert.match(sent.at(-1)!.text, /Удаление исходного сообщения подтвердить не удалось/);
+    } finally {
+      await bot.closeRequests();
+    }
   }
 });
 
@@ -436,6 +525,7 @@ void test("uncertain Telegram ban results are audited and never retried by a sec
   await bot.handleUpdate(callback(item));
   assert.equal(state.bans, 1);
   assert.equal(item.status, "unknown");
+  assert.equal(state.deletions, 0);
   assert.equal(state.announcements, 0);
   assert.equal(state.generations, 0);
   await bot.closeRequests();

@@ -6,7 +6,7 @@ import type { Api, Context, MiddlewareFn } from "grammy";
 
 type ModerationApi = Pick<
   Api,
-  "getChat" | "getChatMember" | "sendMessage" | "banChatMember" | "deleteMessage"
+  "getChat" | "getChatMember" | "sendMessage" | "banChatMember" | "deleteMessage" | "deleteMessages"
 >;
 
 function excerpt(text: string, limit: number): string {
@@ -51,7 +51,7 @@ export function reviewText(item: ReviewCase): string {
     sourceLink,
     item.action === "delete"
       ? "Удаление требует твоего подтверждения и доступно в пределах срока Telegram (обычно 48 часов)."
-      : "Решить можно в течение 7 дней. Бан — навсегда, с удалением всех сообщений этого участника в этой группе. Сообщения остальных останутся.",
+      : "Решить можно в течение 7 дней. Бан — навсегда, с запросом удаления сообщений этого участника. Исходное сообщение дополнительно удалю отдельно, если позволяет Telegram. Сообщения остальных останутся.",
   ].join("\n\n");
 }
 
@@ -148,9 +148,30 @@ export function createModerationActions(
       await api.banChatMember(Number(item.chatId), Number(item.userId), { revoke_messages: true });
       return "allowed";
     },
+    async removeBannedMessage(item) {
+      if (
+        item.status !== "banned" ||
+        Number(item.userId) === config.ownerUserId ||
+        protectedIds.has(Number(item.userId)) ||
+        item.sentAt.getTime() <= Date.now() - 48 * 60 * 60 * 1000
+      ) {
+        return false;
+      }
+      if (!(await canModerate({ ...item, action: "delete" }))) return false;
+      const target = await api.getChatMember(Number(item.chatId), Number(item.userId));
+      if (
+        target.user.id !== Number(item.userId) ||
+        target.status === "creator" ||
+        target.status === "administrator"
+      ) {
+        return false;
+      }
+      // Revocation may already have removed it; deleteMessages safely skips absent messages.
+      return api.deleteMessages(Number(item.chatId), [item.messageId]);
+    },
     async announceBan(item) {
       if (item.status !== "banned" || !(await canModerate(item))) return false;
-      let text = "С этим разобралась, сообщения забаненного участника убрала. Продолжаем разговор.";
+      let text = "Участника забанила. Продолжаем разговор.";
       if (generateBanAnnouncement) {
         try {
           text = await generateBanAnnouncement();

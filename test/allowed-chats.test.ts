@@ -206,6 +206,7 @@ void test("moderation validates the case chat and rejects a substituted Telegram
     sendMessage: async () => assert.fail("No notification"),
     banChatMember: async () => assert.fail("No ban"),
     deleteMessage: async () => assert.fail("No deletion"),
+    deleteMessages: async () => assert.fail("No cleanup"),
   });
   assert.equal(await mismatched.eligibility(source), "denied");
 });

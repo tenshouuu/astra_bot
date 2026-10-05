@@ -66,9 +66,15 @@ states, and durable audit metadata independently of conversation reset. Two anal
 one active review is allowed per participant. Reviews expire after seven days. Startup resumes analyses
 but never repeats ambiguous notification/ban delivery. Owner permissions and target protections are
 checked immediately before each confirmed ban. Bans explicitly revoke only the target participant's
-messages in the group. After persisting success, the bot attempts one silent, varied announcement
+messages in the group. After persisting the ban, the bot separately removes only the source message
+using deleteMessages (which skips already absent messages), rechecking owner deletion rights and
+target protection within Telegram's 48-hour deletion window. Cleanup failure leaves the ban confirmed,
+is logged without message content, and is reported to the owner without claiming deletion; duplicate
+callbacks never repeat cleanup or the ban. The owner confirmation reports only the source message's
+removal, not the entire user's history. The bot then attempts one silent, varied announcement
 in the source topic, without identities or evidence; announcement failure never retries the ban.
-Announcement text is generated using the shared Astra character and only the confirmed action,
+Announcement text is generated using the shared Astra character and only the confirmed ban, without
+claiming message deletion,
 with two concurrent requests at most, a 10-second timeout, no retries, and a short fallback phrase.
 Owner permissions are rechecked after generation and before sending.
 Moderation requires the owner to start the private bot

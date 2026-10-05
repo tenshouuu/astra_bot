@@ -13,6 +13,7 @@ export interface ModerationActions {
   eligibility(item: ReviewCase): Promise<Eligibility>;
   notify(item: ReviewCase): Promise<number | undefined>;
   ban(item: ReviewCase, current: () => Promise<boolean>): Promise<Eligibility>;
+  removeBannedMessage?(item: ReviewCase): Promise<boolean>;
   announceBan?(item: ReviewCase): Promise<boolean>;
   deleteMessage?(item: ReviewCase, current: () => Promise<boolean>): Promise<Eligibility>;
 }
@@ -190,8 +191,20 @@ export function createModeration(
     }
 
     if (action === "delete") return "Сообщение удалено.";
-    const confirmation =
-      "Готово: участника забанила навсегда, его сообщения в этой группе удалила.";
+    // The ban is durable before cleanup; deletion failure must not turn it into an uncertain ban.
+    let messageRemoved = false;
+    try {
+      messageRemoved = (await actions.removeBannedMessage?.(item)) ?? false;
+    } catch {
+      console.warn("Moderation banned message removal failed", { caseId: item.id });
+    }
+    console.info("Moderation banned message removal completed", {
+      caseId: item.id,
+      confirmed: messageRemoved,
+    });
+    const confirmation = messageRemoved
+      ? "Готово: участника забанила навсегда, исходного сообщения в чате больше нет."
+      : "Участника забанила навсегда. Удаление исходного сообщения подтвердить не удалось — проверь его в чате.";
     // Persist the ban first; failed or ambiguous announcements must never trigger another ban/send.
     if (actions.announceBan) {
       try {

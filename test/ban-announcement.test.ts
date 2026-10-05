@@ -13,6 +13,7 @@ void test("ban announcement uses Astra's character and only trusted facts with a
         assert.equal(body.model, config.openaiModel);
         assert.ok(String(body.instructions).startsWith(characterInstructions));
         assert.match(String(body.instructions), /Telegram подтвердил бан/);
+        assert.match(String(body.instructions), /Удаление сообщений здесь не подтверждено/);
         assert.equal(typeof body.input, "string");
         assert.equal(body.store, false);
         assert.equal(body.max_output_tokens, 1024);
