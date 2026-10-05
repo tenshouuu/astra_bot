@@ -63,13 +63,6 @@ function setup(
   const bot = createBot(config, async () => "Synthetic answer", undefined, {
     store,
     classify,
-    generateBanAnnouncement: async () => {
-      state.generations++;
-      assert.ok([...cases.values()].some((item) => item.status === "banned"));
-      if (state.generationFails) throw new Error("Synthetic AI timeout");
-      if (state.demoteOwnerDuringGeneration) state.ownerStatus = "member";
-      return `Synthetic generated announcement ${state.generations}`;
-    },
   });
   bot.botInfo = {
     id: 42,
@@ -98,12 +91,8 @@ function setup(
     messagePresent: true,
     targetStatusAfterBan: "member",
     ownerStatusAfterBan: "creator",
-    announcementFails: false,
     announcements: 0,
     demoteOwnerAfterBan: false,
-    generations: 0,
-    generationFails: false,
-    demoteOwnerDuringGeneration: false,
   };
   bot.api.config.use(async (_previous, method, payload) => {
     if (method === "getChat") {
@@ -123,13 +112,7 @@ function setup(
     }
     if (method === "sendMessage" && "text" in payload && "chat_id" in payload) {
       assert.equal("parse_mode" in payload, false);
-      if (payload.chat_id === config.allowedChatId && state.bans > 0) {
-        state.announcements++;
-        assert.ok([...cases.values()].some((item) => item.status === "banned"));
-        assert.equal("reply_parameters" in payload, false);
-        assert.ok("disable_notification" in payload && payload.disable_notification);
-        if (state.announcementFails) throw new Error("Synthetic announcement timeout");
-      }
+      if (payload.chat_id === config.allowedChatId && state.bans > 0) state.announcements++;
       sent.push({
         chatId: payload.chat_id,
         text: payload.text,
@@ -181,7 +164,6 @@ void test("advertising only sends an owner review; confirmation bans once across
   await bot.handleUpdate(message());
   await bot.waitForRequests();
   assert.equal(state.bans, 0);
-  assert.equal(state.generations, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0]?.chatId, 1);
   assert.match(sent[0]?.text ?? "", /Продам USDT/);
@@ -196,14 +178,8 @@ void test("advertising only sends an owner review; confirmation bans once across
   assert.equal(state.messagePresent, false);
   assert.equal(item.status, "banned");
   assert.equal(item.decidedBy, 1n);
-  assert.equal(state.announcements, 1);
-  assert.equal(state.generations, 1);
-  const announcement = sent.find((entry) => entry.chatId === config.allowedChatId)!;
-  assert.equal(announcement.text, "Synthetic generated announcement 1");
-  assert.equal(announcement.topicId, undefined);
-  assert.ok(!announcement.text.includes(item.authorLabel));
-  assert.ok(!announcement.text.includes(item.text));
-  assert.ok(!announcement.text.includes(item.reason!));
+  assert.equal(state.announcements, 0);
+  assert.ok(sent.every((entry) => entry.chatId === config.ownerUserId));
   assert.ok(sent.some((entry) => entry.chatId === 1 && /забанила навсегда/.test(entry.text)));
   await bot.closeRequests();
 });
@@ -276,7 +252,7 @@ void test("spam and ambiguous posts have different owner assessments but neither
   }
 });
 
-void test("ban announcements stay in the source topic and vary between confirmed bans", async () => {
+void test("confirmed bans in topics notify only the owner", async () => {
   const { bot, cases, sent, state } = setup();
   try {
     for (const updateId of [10, 11]) {
@@ -290,9 +266,9 @@ void test("ban announcements stay in the source topic and vary between confirmed
     }
     const announcements = sent.filter((entry) => entry.chatId === config.allowedChatId);
     assert.equal(state.bans, 2);
-    assert.equal(announcements.length, 2);
-    assert.ok(announcements.every((entry) => entry.topicId === 77));
-    assert.notEqual(announcements[0]!.text, announcements[1]!.text);
+    assert.equal(announcements.length, 0);
+    assert.equal(sent.filter((entry) => /забанила навсегда/.test(entry.text)).length, 2);
+    assert.ok(sent.every((entry) => entry.chatId === config.ownerUserId));
   } finally {
     await bot.closeRequests();
   }
@@ -311,7 +287,7 @@ void test("basic groups also explicitly remove the banned user's source message"
     assert.equal(state.bans, 1);
     assert.equal(state.deletions, 1);
     assert.equal(state.messagePresent, false);
-    assert.equal(state.announcements, 1);
+    assert.equal(state.announcements, 0);
   } finally {
     await bot.closeRequests();
   }
@@ -324,7 +300,6 @@ void test("cleanup failure preserves the confirmed ban and reports no deletion s
     await bot.waitForRequests();
     const item = [...cases.values()][0]!;
     state.deletionFails = true;
-    state.generationFails = true;
     await bot.handleUpdate(callback(item));
     assert.equal(item.status, "banned");
     assert.equal(state.messagePresent, true);
@@ -332,12 +307,11 @@ void test("cleanup failure preserves the confirmed ban and reports no deletion s
       sent.at(-1)!.text,
       /забанила навсегда.*Удаление исходного сообщения подтвердить не удалось/s,
     );
-    const announcement = sent.find((entry) => entry.chatId === config.allowedChatId)!;
-    assert.doesNotMatch(announcement.text, /удалила|убрала|очистила/);
+    assert.ok(sent.every((entry) => entry.chatId === config.ownerUserId));
     await bot.handleUpdate(callback(item));
     assert.equal(state.bans, 1);
     assert.equal(state.deletions, 1);
-    assert.equal(state.announcements, 1);
+    assert.equal(state.announcements, 0);
   } finally {
     await bot.closeRequests();
   }
@@ -382,55 +356,7 @@ void test("cleanup rechecks protection, delete rights, and Telegram's message ag
   }
 });
 
-void test("an announcement failure or owner demotion preserves the ban and never retries delivery", async () => {
-  for (const scenario of ["timeout", "demotion", "demotion-during-generation"] as const) {
-    const { bot, cases, sent, state } = setup();
-    try {
-      await bot.handleUpdate(message());
-      await bot.waitForRequests();
-      const item = [...cases.values()][0]!;
-      state.announcementFails = scenario === "timeout";
-      state.demoteOwnerAfterBan = scenario === "demotion";
-      state.demoteOwnerDuringGeneration = scenario === "demotion-during-generation";
-      await bot.handleUpdate(callback(item));
-      assert.equal(item.status, "banned");
-      assert.match(
-        sent.at(-1)!.text,
-        /забанила навсегда.*Не удалось подтвердить отправку объявления/s,
-      );
-      await bot.handleUpdate(callback(item));
-      assert.equal(state.bans, 1);
-      assert.equal(state.announcements, scenario === "timeout" ? 1 : 0);
-      assert.equal(state.generations, scenario === "demotion" ? 0 : 1);
-    } finally {
-      await bot.closeRequests();
-    }
-  }
-});
-
-void test("AI failure sends a fallback once without affecting the confirmed ban", async () => {
-  const { bot, cases, sent, state } = setup();
-  try {
-    await bot.handleUpdate(message());
-    await bot.waitForRequests();
-    const item = [...cases.values()][0]!;
-    state.generationFails = true;
-    await bot.handleUpdate(callback(item));
-    await bot.handleUpdate(callback(item));
-    assert.equal(item.status, "banned");
-    assert.equal(state.bans, 1);
-    assert.equal(state.generations, 1);
-    assert.equal(state.announcements, 1);
-    assert.match(
-      sent.find((entry) => entry.chatId === config.allowedChatId)!.text,
-      /Модераторская совесть довольна/,
-    );
-  } finally {
-    await bot.closeRequests();
-  }
-});
-
-void test("a failed audit write after Telegram confirms the ban suppresses the announcement", async () => {
+void test("a failed audit write after Telegram confirms the ban prevents cleanup and retries", async () => {
   const { bot, store, cases, state } = setup();
   try {
     await bot.handleUpdate(message());
@@ -446,7 +372,7 @@ void test("a failed audit write after Telegram confirms the ban suppresses the a
     assert.equal(item.status, "unknown");
     assert.equal(state.bans, 1);
     assert.equal(state.announcements, 0);
-    assert.equal(state.generations, 0);
+    assert.equal(state.deletions, 0);
   } finally {
     await bot.closeRequests();
   }
@@ -527,7 +453,6 @@ void test("uncertain Telegram ban results are audited and never retried by a sec
   assert.equal(item.status, "unknown");
   assert.equal(state.deletions, 0);
   assert.equal(state.announcements, 0);
-  assert.equal(state.generations, 0);
   await bot.closeRequests();
 });
 

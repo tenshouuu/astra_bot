@@ -14,7 +14,6 @@ export interface ModerationActions {
   notify(item: ReviewCase): Promise<number | undefined>;
   ban(item: ReviewCase, current: () => Promise<boolean>): Promise<Eligibility>;
   removeBannedMessage?(item: ReviewCase): Promise<boolean>;
-  announceBan?(item: ReviewCase): Promise<boolean>;
   deleteMessage?(item: ReviewCase, current: () => Promise<boolean>): Promise<Eligibility>;
 }
 
@@ -205,15 +204,6 @@ export function createModeration(
     const confirmation = messageRemoved
       ? "Готово: участника забанила навсегда, исходного сообщения в чате больше нет."
       : "Участника забанила навсегда. Удаление исходного сообщения подтвердить не удалось — проверь его в чате.";
-    // Persist the ban first; failed or ambiguous announcements must never trigger another ban/send.
-    if (actions.announceBan) {
-      try {
-        if (await actions.announceBan(item)) return confirmation;
-      } catch {
-        console.warn("Moderation ban announcement failed", { caseId: item.id });
-      }
-      return `${confirmation} Не удалось подтвердить отправку объявления в чат; повторять его не буду.`;
-    }
     return confirmation;
   }
 

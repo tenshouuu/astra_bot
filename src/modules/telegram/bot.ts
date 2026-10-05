@@ -25,7 +25,6 @@ export function createBot(
   review?: {
     store: ModerationStore;
     classify: Classify;
-    generateBanAnnouncement?: () => Promise<string>;
   },
   detectAddress?: DetectAddress,
   detectContinuation?: DetectContinuation,
@@ -40,7 +39,7 @@ export function createBot(
       ? createModeration(
           review.store,
           review.classify,
-          createModerationActions(botConfig, bot.api, review.generateBanAnnouncement),
+          createModerationActions(botConfig, bot.api),
           () => botConfig.ownerUserId,
         )
       : undefined;

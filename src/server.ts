@@ -9,7 +9,6 @@ import { createAsk, createSummarize } from "@app/modules/openai/api";
 import { createBot } from "@app/modules/telegram/bot";
 import { createClassify } from "@app/modules/openai/moderation";
 import { createModerationStore } from "@app/modules/moderation/store";
-import { createBanAnnouncement } from "@app/modules/openai/ban-announcement";
 import { createDetectAddress } from "@app/modules/openai/address";
 import { createDetectContinuation } from "@app/modules/openai/continuation";
 
@@ -26,7 +25,6 @@ const bot = createBot(
     ? {
         store: createModerationStore(database),
         classify: createClassify(config),
-        generateBanAnnouncement: createBanAnnouncement(config),
       }
     : undefined,
   createDetectAddress(config),

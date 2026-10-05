@@ -55,11 +55,7 @@ export function reviewText(item: ReviewCase): string {
   ].join("\n\n");
 }
 
-export function createModerationActions(
-  config: AppConfig,
-  api: ModerationApi,
-  generateBanAnnouncement?: () => Promise<string>,
-): ModerationActions {
+export function createModerationActions(config: AppConfig, api: ModerationApi): ModerationActions {
   const protectedIds = new Set(config.protectedUserIds ?? []);
   if (config.ownerUserId !== undefined) protectedIds.add(config.ownerUserId);
 
@@ -168,24 +164,6 @@ export function createModerationActions(
       }
       // Revocation may already have removed it; deleteMessages safely skips absent messages.
       return api.deleteMessages(Number(item.chatId), [item.messageId]);
-    },
-    async announceBan(item) {
-      if (item.status !== "banned" || !(await canModerate(item))) return false;
-      let text = "Модераторская совесть довольна. Премию принимаю мемами.";
-      if (generateBanAnnouncement) {
-        try {
-          text = await generateBanAnnouncement();
-        } catch {
-          console.warn("Ban announcement generation failed", { caseId: item.id });
-        }
-      }
-      // Permissions may change while the model is generating its reply.
-      if (!(await canModerate(item))) return false;
-      await api.sendMessage(Number(item.chatId), text, {
-        ...(item.topicId ? { message_thread_id: item.topicId } : {}),
-        disable_notification: true,
-      });
-      return true;
     },
     async deleteMessage(item, current) {
       const allowed = await eligibility(item);
