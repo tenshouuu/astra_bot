@@ -1,6 +1,7 @@
 import type { AppConfig } from "@app/config/env";
 import type { Ask } from "@app/modules/openai/api";
 import type { DetectAddress } from "@app/modules/openai/address";
+import type { DetectContinuation } from "@app/modules/openai/continuation";
 import type { ConversationMemory } from "@app/modules/memory/service";
 import { captureMessages } from "@app/modules/telegram/memory";
 import { createAskHandler, createResetHandler } from "@app/modules/telegram/ask";
@@ -26,6 +27,7 @@ export function createBot(
     generateBanAnnouncement?: () => Promise<string>;
   },
   detectAddress?: DetectAddress,
+  detectContinuation?: DetectContinuation,
 ) {
   const botConfig = { ...config };
   const bot = new Bot(botConfig.botToken, { client: { timeoutSeconds: 15 } });
@@ -95,10 +97,15 @@ export function createBot(
     memory,
     (ctx) => createTelegramTools(ctx, botConfig, review?.store, moderation),
     detectAddress,
+    detectContinuation,
   );
   bot.command("ask", askHandler);
 
-  if (memory) bot.command("reset", createResetHandler(botConfig, memory, askHandler.isPending));
+  if (memory)
+    bot.command(
+      "reset",
+      createResetHandler(botConfig, memory, askHandler.isPending, askHandler.clearDialogue),
+    );
   bot.on("message:text", askHandler.addressed);
 
   bot.catch(({ ctx }) => {

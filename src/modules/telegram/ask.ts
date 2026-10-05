@@ -5,6 +5,9 @@ import type { ContextMessage } from "@app/modules/memory/types";
 import { canAsk, canManageChat } from "@app/modules/telegram/access";
 import { addressedQuestion, hasNameCandidate } from "@app/modules/telegram/address";
 import type { DetectAddress } from "@app/modules/openai/address";
+import type { DetectContinuation } from "@app/modules/openai/continuation";
+import { createDialogues } from "@app/modules/telegram/dialogue";
+import type { DialogueTurn } from "@app/modules/memory/types";
 import { conversationId, messageId, messageAuthor } from "@app/modules/telegram/memory";
 import type { Ask } from "@app/modules/openai/api";
 import type { AssistantRuntime } from "@app/modules/openai/tools";
@@ -59,6 +62,7 @@ async function requestAnswer(
   question: string,
   memory?: ConversationMemory,
   runtime?: AssistantRuntime,
+  recentTurns: readonly DialogueTurn[] = [],
 ): Promise<string | undefined> {
   await ctx.replyWithChatAction("typing").catch(() => undefined);
 
@@ -83,6 +87,16 @@ async function requestAnswer(
           role: "user",
           author: `Quoted reply from ${replied.from?.username ?? replied.from?.first_name ?? "unknown"}`,
           text: replied.text,
+        }),
+      );
+    }
+    for (const turn of recentTurns) {
+      context.push(
+        contextMessage({
+          id: 0n,
+          role: turn.authorId === null ? "assistant" : "user",
+          author: turn.authorId === null ? "Astra" : `Telegram user ${turn.authorId}`,
+          text: turn.text,
         }),
       );
     }
@@ -142,7 +156,9 @@ export function createAskHandler(
   memory?: ConversationMemory,
   tools?: (ctx: AskContext) => Promise<AssistantRuntime>,
   detectAddress?: DetectAddress,
+  detectContinuation?: DetectContinuation,
 ) {
+  const dialogues = createDialogues();
   const pendingRequests = new Set<string>();
   const recentUpdates = new Set<number>();
   const jobs = new Map<string, Promise<void>>();
@@ -166,8 +182,9 @@ export function createAskHandler(
   const handleQuestion = async (
     ctx: AskContext,
     question: string,
-    byName = false,
+    trigger: "explicit" | "name" | "continuation" = "explicit",
   ): Promise<void> => {
+    const implicit = trigger !== "explicit";
     if (closing) return;
     if (isDuplicate(ctx.update.update_id)) return;
     if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
@@ -177,57 +194,89 @@ export function createAskHandler(
         updateId: ctx.update.update_id,
       });
     }
-    if (!(await checkAccess(ctx, config, false, byName))) return;
+    if (!(await checkAccess(ctx, config, false, implicit))) return;
 
     const validationError = questionError(question);
     if (validationError) {
-      if (!byName) await ctx.reply(validationError);
+      if (!implicit) await ctx.reply(validationError);
       return;
     }
 
     const requestKey = `${ctx.chat.id}:${ctx.from?.id}`;
+    const scope = conversationId(ctx);
+    const dialogue = dialogues.get(scope);
+    const recentTurns = dialogue?.turns.slice() ?? [];
+    const turn = { authorId: ctx.from!.id, text: question };
+    dialogues.observe(scope, turn);
     if (pendingRequests.has(requestKey)) {
-      if (!byName)
+      if (!implicit)
         await ctx.reply("Я ещё разбираюсь с твоим предыдущим вопросом. Дай мне немного времени.");
       return;
     }
 
-    const scope = conversationId(ctx);
     if (jobs.has(scope)) {
-      if (!byName)
+      if (!implicit)
         await ctx.reply("Я ещё отвечаю на вопрос в этом диалоге. Закончу — возьмусь за следующий.");
       return;
     }
     if (jobs.size >= MAX_PENDING_REQUESTS) {
-      if (!byName) await ctx.reply("Сейчас у меня много вопросов. Попробуй чуть позже.");
+      if (!implicit) await ctx.reply("Сейчас у меня много вопросов. Попробуй чуть позже.");
       return;
     }
     if (closing) return;
 
     pendingRequests.add(requestKey);
     const job = (async () => {
-      if (byName) {
+      let closesConversation = false;
+      if (implicit) {
         const replied = ctx.msg.reply_to_message;
         const sameTopic = (replied?.message_thread_id ?? 0) === (ctx.msg.message_thread_id ?? 0);
-        const addressed = await detectAddress?.({
+        const evidence = {
           text: question,
           replyText: sameTopic ? (replied?.text ?? replied?.caption ?? "").slice(0, 1200) : "",
           repliesToOther: !!replied && replied.from?.id !== ctx.me.id,
-        });
+        };
+        let addressed: boolean | undefined;
+        if (trigger === "continuation") {
+          if (!dialogue || dialogues.get(scope) !== dialogue) return;
+          const decision = await detectContinuation?.({
+            ...evidence,
+            authorId: ctx.from!.id,
+            recentTurns,
+          });
+          if (dialogues.get(scope) !== dialogue) return;
+          addressed = decision?.addressed;
+          closesConversation = decision?.closesConversation ?? false;
+        } else addressed = await detectAddress?.(evidence);
         if (!addressed || !(await checkAccess(ctx, config, false, true))) return;
+        if (closesConversation) dialogues.clear(scope);
       }
       let runtime: AssistantRuntime | undefined;
       try {
         runtime = tools ? await tools(ctx) : undefined;
+        if (runtime && closesConversation) {
+          runtime = {
+            ...runtime,
+            requestContext: { ...runtime.requestContext, conversation_closing: true },
+          };
+        }
       } catch {
         console.error("Assistant tool initialization failed", { updateId: ctx.update.update_id });
         await ctx.reply(REQUEST_FAILURE_MESSAGE);
         return;
       }
-      const answer = await requestAnswer(ctx, ask, question, memory, runtime);
+      const answer = await requestAnswer(
+        ctx,
+        ask,
+        question,
+        memory,
+        runtime,
+        trigger === "continuation" ? recentTurns : [],
+      );
       if (answer === undefined) return;
 
       if (!(await sendAnswer(ctx, config, answer, runtime))) return;
+      if (detectContinuation && !closesConversation) dialogues.answered(scope, turn, answer);
       if (memory) {
         await memory.record({
           conversationId: conversationId(ctx),
@@ -256,13 +305,25 @@ export function createAskHandler(
       const question = addressedQuestion(ctx);
       if (question !== undefined) await handleQuestion(ctx, question);
       else if (detectAddress && hasNameCandidate(ctx))
-        await handleQuestion(ctx, ctx.message.text, true);
+        await handleQuestion(ctx, ctx.message.text, "name");
+      else if (
+        detectContinuation &&
+        dialogues.get(conversationId(ctx)) &&
+        !ctx.message.forward_origin &&
+        !ctx.message.text.startsWith("/") &&
+        !ctx.message.entities?.some((entity) =>
+          ["code", "pre", "blockquote", "expandable_blockquote"].includes(entity.type),
+        )
+      )
+        await handleQuestion(ctx, ctx.message.text, "continuation");
     },
     waitForRequests,
     isPending: (scope: string) => jobs.has(scope),
+    clearDialogue: (scope: string) => dialogues.clear(scope),
     close: async () => {
       closing = true;
       await waitForRequests();
+      dialogues.close();
     },
   });
 }
@@ -271,6 +332,7 @@ export function createResetHandler(
   config: AppConfig,
   memory: ConversationMemory,
   isPending: (scope: string) => boolean,
+  clearDialogue?: (scope: string) => void,
 ) {
   return async (ctx: AskContext): Promise<void> => {
     if (!(await checkAccess(ctx, config, true))) return;
@@ -280,6 +342,7 @@ export function createResetHandler(
     }
 
     await memory.reset(conversationId(ctx));
+    clearDialogue?.(conversationId(ctx));
     await ctx.reply("Начнём с чистого листа. Предыдущий разговор больше не учитываю.");
   };
 }

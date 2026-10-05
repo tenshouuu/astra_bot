@@ -8,6 +8,7 @@ import { createBot } from "@app/modules/telegram/bot";
 import { splitAnswer } from "@app/modules/telegram/ask";
 import { characterInstructions } from "@app/modules/openai/character";
 import type { DetectAddress } from "@app/modules/openai/address";
+import type { DetectContinuation } from "@app/modules/openai/continuation";
 import type { MessageEntity, Update } from "grammy/types";
 
 const config: AppConfig = {
@@ -48,8 +49,9 @@ function setup(
   memory?: ConversationMemory,
   botConfig = config,
   detectAddress?: DetectAddress,
+  detectContinuation?: DetectContinuation,
 ) {
-  const bot = createBot(botConfig, ask, memory, undefined, detectAddress);
+  const bot = createBot(botConfig, ask, memory, undefined, detectAddress, detectContinuation);
   bot.botInfo = {
     id: 42,
     is_bot: true,
@@ -84,6 +86,246 @@ function setup(
   });
   return { bot, replies, replyEntities };
 }
+
+function followup(text: string, updateId: number, userId = 2, topicId = 0): Update {
+  const request = update(text, userId);
+  assert.ok(request.message);
+  request.update_id = updateId;
+  request.message.message_id = updateId;
+  request.message.message_thread_id = topicId;
+  request.message.entities = [];
+  return request;
+}
+
+void test("an untagged answer continues Astra's question and a closing acknowledgment ends the window", async () => {
+  let questions = 0;
+  let detections = 0;
+  const { bot, replies } = setup(
+    async (_question, context, runtime) => {
+      questions++;
+      if (questions === 1) return "Хорошо. А у тебя как?";
+      assert.equal(runtime!.requestContext.conversation_closing, true);
+      assert.ok(context?.some((entry) => entry.content.includes("А у тебя как?")));
+      return "Договорились, поглядываю.";
+    },
+    ["member"],
+    undefined,
+    config,
+    undefined,
+    async (evidence) => {
+      detections++;
+      assert.equal(evidence.text, "Да отлично, продолжай поглядывать чатик");
+      assert.equal(evidence.authorId, 2);
+      assert.deepEqual(
+        evidence.recentTurns.map((turn) => turn.authorId),
+        [2, null],
+      );
+      return { addressed: true, closesConversation: true };
+    },
+  );
+  try {
+    await bot.handleUpdate(followup("Обычный разговор", 0));
+    await bot.handleUpdate(update("/ask как дела?"));
+    await bot.waitForRequests();
+    await bot.handleUpdate(followup("Да отлично, продолжай поглядывать чатик", 2));
+    await bot.waitForRequests();
+    await bot.handleUpdate(followup("Это уже другой разговор", 3));
+    await bot.waitForRequests();
+    assert.deepEqual(replies, ["Хорошо. А у тебя как?", "Договорились, поглядываю."]);
+    assert.equal(questions, 2);
+    assert.equal(detections, 1);
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("another participant may join after an unrelated interruption without inheriting admin tools", async () => {
+  const actors: unknown[] = [];
+  let detections = 0;
+  const { bot, replies } = setup(
+    async (_question, _context, runtime) => {
+      actors.push(runtime!.requestContext.actor_id);
+      assert.equal(
+        runtime!.tools.some((tool) => tool.name === "get_member_info"),
+        actors.length === 1,
+      );
+      return actors.length === 1
+        ? "Для афиши я бы взяла тёплые цвета."
+        : "Они поддерживают настроение афиши.";
+    },
+    ["member"],
+    undefined,
+    config,
+    undefined,
+    async (evidence) => {
+      detections++;
+      if (evidence.authorId === 3) return { addressed: false, closesConversation: false };
+      assert.equal(evidence.authorId, 4);
+      assert.ok(
+        evidence.recentTurns.some(
+          (turn) => turn.authorId === 3 && turn.text === "Маша, скинь исходник",
+        ),
+      );
+      return { addressed: true, closesConversation: false };
+    },
+  );
+  bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "getChatMember" && "user_id" in payload && payload.user_id === 1)
+      return {
+        ok: true,
+        result: { status: "creator", user: { id: 1, is_bot: false, first_name: "Owner" } },
+      } as never;
+    return previous(method, payload, signal);
+  });
+  try {
+    await bot.handleUpdate(update("/ask Какие цвета выбрать?", 1));
+    await bot.waitForRequests();
+    await bot.handleUpdate(followup("Маша, скинь исходник", 2, 3));
+    await bot.waitForRequests();
+    assert.equal(replies.length, 1);
+    await bot.handleUpdate(followup("А почему именно тёплые?", 3, 4));
+    await bot.waitForRequests();
+    assert.deepEqual(actors, [1, 4]);
+    assert.equal(replies.length, 2);
+    assert.equal(detections, 2);
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("unrelated messages do not renew the window and other topics cannot use it", async (t) => {
+  let now = 1_000_000;
+  t.mock.method(Date, "now", () => now);
+  let detections = 0;
+  const { bot, replies } = setup(
+    async () => "Synthetic answer",
+    ["member"],
+    undefined,
+    config,
+    undefined,
+    async () => {
+      detections++;
+      return { addressed: false, closesConversation: false };
+    },
+  );
+  try {
+    await bot.handleUpdate(update("/ask question"));
+    await bot.waitForRequests();
+    await bot.handleUpdate(followup("А почему?", 2, 3, 77));
+    assert.equal(detections, 0);
+    now += 119_000;
+    await bot.handleUpdate(followup("Маша, скинь исходник", 3));
+    await bot.waitForRequests();
+    assert.equal(detections, 1);
+    now += 1001;
+    await bot.handleUpdate(followup("А почему?", 4));
+    await bot.waitForRequests();
+    assert.equal(detections, 1);
+    assert.deepEqual(replies, ["Synthetic answer"]);
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("continuation detection is deduplicated, drained on shutdown and discarded after expiry", async (t) => {
+  let now = 1_000_000;
+  t.mock.method(Date, "now", () => now);
+  let detections = 0;
+  let release!: (result: { addressed: boolean; closesConversation: boolean }) => void;
+  const { bot, replies } = setup(
+    async () => "Synthetic answer",
+    ["member"],
+    undefined,
+    config,
+    undefined,
+    () => {
+      detections++;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  );
+  await bot.handleUpdate(update("/ask question"));
+  await bot.waitForRequests();
+  const request = followup("А почему?", 2, 3);
+  await bot.handleUpdate(request);
+  await bot.handleUpdate(request);
+  await bot.handleUpdate(followup("И ещё вопрос", 3, 4));
+  assert.equal(detections, 1);
+  let closed = false;
+  const closing = bot.closeRequests().then(() => {
+    closed = true;
+  });
+  assert.equal(closed, false);
+  now += 120_001;
+  release({ addressed: true, closesConversation: false });
+  await closing;
+  assert.deepEqual(replies, ["Synthetic answer"]);
+});
+
+void test("a failed answer delivery does not open an untagged conversation", async () => {
+  const { bot } = setup(
+    async () => "Synthetic answer",
+    ["member"],
+    undefined,
+    config,
+    undefined,
+    async () => assert.fail("No successfully delivered answer"),
+  );
+  bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "sendMessage") throw new Error("Synthetic delivery failure");
+    return previous(method, payload, signal);
+  });
+  try {
+    await bot.handleUpdate(update("/ask question"));
+    await bot.waitForRequests();
+    await bot.handleUpdate(followup("А почему?", 2));
+    await bot.waitForRequests();
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("reset clears the active dialogue and continuation detection errors stay silent", async () => {
+  let detections = 0;
+  const memory: ConversationMemory = {
+    record: async () => undefined,
+    context: async () => [],
+    refresh: () => undefined,
+    reset: async () => undefined,
+    prune: async () => undefined,
+    close: async () => undefined,
+  };
+  const { bot, replies } = setup(
+    async () => "Synthetic answer",
+    ["administrator"],
+    memory,
+    config,
+    undefined,
+    async () => {
+      detections++;
+      throw new Error("Synthetic classifier failure");
+    },
+  );
+  try {
+    await bot.handleUpdate(update("/ask question"));
+    await bot.waitForRequests();
+    await bot.handleUpdate(followup("А почему?", 2));
+    await bot.waitForRequests();
+    assert.equal(replies.length, 1);
+    const reset = update("/reset");
+    reset.update_id = 3;
+    assert.ok(reset.message?.entities?.[0]);
+    reset.message.entities[0].length = 6;
+    await bot.handleUpdate(reset);
+    await bot.handleUpdate(followup("А почему?", 4));
+    await bot.waitForRequests();
+    assert.equal(detections, 1);
+    assert.equal(replies.length, 2);
+  } finally {
+    await bot.closeRequests();
+  }
+});
 
 void test("name forms reach intent detection and only direct addresses produce answers", async () => {
   for (const [text, addressed] of [

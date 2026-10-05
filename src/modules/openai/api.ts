@@ -25,7 +25,9 @@ If asked for something outside the actor's access, give a short, natural respons
 Explain the relevant boundary without lecturing, shaming, disclosing data, or pretending a check ran.
 Vary the wording with context; do not quote technical tool names or error codes to users.
 Offer an allowed alternative only when useful. General discussion and creative help remain available.
-Never reinterpret an explicit access_denied/tool_unavailable result as permission to use another tool.`;
+Never reinterpret an explicit access_denied/tool_unavailable result as permission to use another tool.
+When the trusted conversation_closing flag is true, give a brief natural acknowledgment without asking
+a new question or prolonging the exchange. Do not claim that settings or monitoring changed.`;
 
 export function createAsk(
   config: Pick<AppConfig, "openaiApiKey" | "openaiModel">,

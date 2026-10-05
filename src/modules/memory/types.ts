@@ -49,3 +49,4 @@ export interface MemoryStore {
 }
 
 export type Summarize = (previous: string, messages: readonly ContextMessage[]) => Promise<string>;
+export type DialogueTurn = { authorId: number | null; text: string };

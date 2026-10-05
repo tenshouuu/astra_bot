@@ -46,6 +46,15 @@ provider errors, lack of access and overload remain silent. The check shares the
 limits and shutdown lifecycle; it uses only the current text and up to 1200 characters of a same-topic
 quoted reply, with a 10-second timeout, 512 output tokens and no retries. It is an AI judgment,
 so occasional misclassification is possible; /ask and @mentions remain explicit triggers.
+After a successfully delivered assistant answer, an active conversation window lasts two minutes
+in that chat/topic. Any current member may continue without a tag if a separate intent check confirms
+they are addressing Astra. The check sees up to six recent turns with speaker IDs (600 characters
+each); human-to-human messages do not renew the window. Ambiguity/errors remain silent, closing
+acknowledgments close the window, and tools/permissions are rebuilt for the current author.
+The window is kept only in process memory, bounded to 64 scopes with lazy expiry; it is cleared on
+restart, shutdown or an authorized `/reset`. Failed answer delivery does not open it. Continuation
+checks share assistant job limits, with a 10-second timeout, 512 output tokens and no retries.
+They do not receive private data from other chats, and each new answer still passes access checks.
 Assistant requests receive the current background moderation setting independently of chat history.
 Search tools return a filtered sample of up to three messages received by the bot in the current topic;
 they cannot establish that other messages are absent or import Telegram history from before observation.

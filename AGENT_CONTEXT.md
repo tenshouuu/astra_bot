@@ -39,6 +39,12 @@ reconstructing restricted reports from conversation context; public-topic discus
 Name candidates use an AI intent check inside those jobs (10-second timeout, no retries, 512 tokens),
 before typing or answering. It distinguishes direct address from third-person/quoted references;
 uncertainty, errors and overload stay silent. Code, links, Telegram quotes and forwards are excluded.
+Successful assistant answers open a two-minute continuation window per chat/topic. A separate AI
+intent check may accept an untagged reply from any current participant, using up to six recent turns
+with speaker IDs and 600 characters each. Unrelated human messages do not renew the window; closing
+acknowledgments end it. Detection uses existing job limits, 10 seconds, 512 tokens and no retries.
+Every continuation creates fresh tool permissions for its author. Windows are memory-only, bounded
+to 64 scopes with lazy expiry and cleared on reset/shutdown; failed delivery does not open a window.
 It limits input/output and pending requests, and handles provider failures without logging
 question or answer contents. PostgreSQL/Prisma persist text messages in the configured groups and the
 owner's private chat, isolated by chat and topic. `/ask` includes bounded recent history and a background

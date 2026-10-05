@@ -11,6 +11,7 @@ import { createClassify } from "@app/modules/openai/moderation";
 import { createModerationStore } from "@app/modules/moderation/store";
 import { createBanAnnouncement } from "@app/modules/openai/ban-announcement";
 import { createDetectAddress } from "@app/modules/openai/address";
+import { createDetectContinuation } from "@app/modules/openai/continuation";
 
 const config = getConfig();
 const getBotInfo = createGetBotInfo(config.botToken);
@@ -29,6 +30,7 @@ const bot = createBot(
       }
     : undefined,
   createDetectAddress(config),
+  createDetectContinuation(config),
 );
 const cleanupTimer = setInterval(
   () => {
