@@ -1,5 +1,6 @@
 import type { AppConfig } from "@app/config/env";
 import type { Ask } from "@app/modules/openai/api";
+import type { DetectAddress } from "@app/modules/openai/address";
 import type { ConversationMemory } from "@app/modules/memory/service";
 import { captureMessages } from "@app/modules/telegram/memory";
 import { createAskHandler, createResetHandler } from "@app/modules/telegram/ask";
@@ -24,6 +25,7 @@ export function createBot(
     classify: Classify;
     generateBanAnnouncement?: () => Promise<string>;
   },
+  detectAddress?: DetectAddress,
 ) {
   const botConfig = { ...config };
   const bot = new Bot(botConfig.botToken, { client: { timeoutSeconds: 15 } });
@@ -87,8 +89,12 @@ export function createBot(
     await ctx.reply("Я тут, слушаю.");
   });
 
-  const askHandler = createAskHandler(botConfig, ask, memory, (ctx) =>
-    createTelegramTools(ctx, botConfig, review?.store, moderation),
+  const askHandler = createAskHandler(
+    botConfig,
+    ask,
+    memory,
+    (ctx) => createTelegramTools(ctx, botConfig, review?.store, moderation),
+    detectAddress,
   );
   bot.command("ask", askHandler);
 

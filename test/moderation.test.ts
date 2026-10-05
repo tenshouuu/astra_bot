@@ -86,7 +86,7 @@ function setup(
     can_manage_bots: false,
     supports_join_request_queries: false,
   };
-  const sent: { chatId: number | string; text: string; topicId?: number }[] = [];
+  const sent: { chatId: number | string; text: string; topicId?: number; buttons: string[] }[] = [];
   const state = {
     chatType: "supergroup",
     targetStatus: "member",
@@ -128,6 +128,12 @@ function setup(
       sent.push({
         chatId: payload.chat_id,
         text: payload.text,
+        buttons:
+          "reply_markup" in payload &&
+          payload.reply_markup &&
+          "inline_keyboard" in payload.reply_markup
+            ? payload.reply_markup.inline_keyboard.flat().map((button) => button.text)
+            : [],
         ...("message_thread_id" in payload ? { topicId: payload.message_thread_id } : {}),
       });
       return { ok: true, result: { message_id: 1000 + sent.length } } as never;
@@ -178,6 +184,74 @@ void test("advertising only sends an owner review; confirmation bans once across
   assert.ok(!announcement.text.includes(item.reason!));
   assert.ok(sent.some((entry) => entry.chatId === 1 && /забанила навсегда/.test(entry.text)));
   await bot.closeRequests();
+});
+
+void test("creative events include prior human conversation and ask the owner without recommending punishment", async () => {
+  const history = ["Мне нравится свет на твоём эскизе", "Спасибо за совет, попробую другой ракурс"];
+  const { bot, cases, sent, state } = setup(async (evidence) => {
+    if (history.includes(evidence.text))
+      return { category: "clean", reason: "Живое обсуждение рисунка" };
+    assert.deepEqual(evidence.previousMessages, history);
+    assert.equal(evidence.observedMessageCount, 3);
+    return {
+      category: "community_event",
+      reason:
+        "Творческая встреча. Ранее автор обсуждал рисунки без рекламы; нужен ответ владельца, а не санкции.",
+    };
+  });
+  try {
+    for (const [index, text] of [
+      ...history,
+      "В субботу встреча для скетчинга, регистрация по ссылке",
+    ].entries()) {
+      await bot.handleUpdate(message(text, 10 + index));
+      await bot.waitForRequests();
+    }
+    assert.equal(state.bans, 0);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]!.chatId, 1);
+    assert.match(sent[0]!.text, /анонс творческого события/);
+    assert.match(sent[0]!.text, /не основание для бана или удаления/);
+    assert.match(sent[0]!.text, /Ранее автор обсуждал рисунки/);
+    assert.equal(sent[0]!.buttons[0], "Оставить без санкций");
+    const item = [...cases.values()].at(-1)!;
+    await bot.handleUpdate(callback(item, "ban", 3));
+    assert.equal(item.status, "review");
+    assert.equal(state.bans, 0);
+    await bot.handleUpdate(callback(item, "keep"));
+    assert.equal(item.status, "kept");
+    assert.equal(state.bans, 0);
+    assert.equal(state.announcements, 0);
+  } finally {
+    await bot.closeRequests();
+  }
+});
+
+void test("spam and ambiguous posts have different owner assessments but neither auto-enforces", async () => {
+  for (const category of ["spam", "suspicious"] as const) {
+    const { bot, cases, sent, state } = setup(async () => ({
+      category,
+      reason: "Synthetic evidence",
+    }));
+    try {
+      await bot.handleUpdate(message());
+      await bot.waitForRequests();
+      assert.equal(state.bans, 0);
+      assert.equal([...cases.values()][0]!.category, category);
+      assert.match(
+        sent[0]!.text,
+        category === "spam"
+          ? /не доказательство, что автор — бот/
+          : /Оснований рекомендовать бан или удаление недостаточно/,
+      );
+      assert.equal(
+        sent[0]!.buttons[0],
+        category === "spam" ? "Забанить навсегда" : "Оставить без санкций",
+      );
+    } finally {
+      await bot.closeRequests();
+    }
+  }
 });
 
 void test("ban announcements stay in the source topic and vary between confirmed bans", async () => {
@@ -485,6 +559,8 @@ void test("OpenAI moderation uses strict structured output, treats evidence as d
           assert.equal(request.model, "test-model");
           assert.match(String(request.instructions), /untrusted evidence/);
           assert.match(String(request.instructions), /Do not infer account creation dates/);
+          assert.match(String(request.instructions), /Prior genuine replies/);
+          assert.match(String(request.instructions), /Prefer this category over advertising/);
           assert.equal((request.text as { format: { strict: boolean } }).format.strict, true);
           return { status, output_text: output };
         },
@@ -505,6 +581,12 @@ void test("OpenAI moderation uses strict structured output, treats evidence as d
     } else await assert.rejects(classify(input));
   }
   assert.throws(() => parseClassification('{"category":"clean","reason":""}'));
+  for (const category of ["spam", "community_event"]) {
+    assert.equal(
+      parseClassification(JSON.stringify({ category, reason: "Synthetic reason" })).category,
+      category,
+    );
+  }
   assert.throws(() =>
     parseClassification(JSON.stringify({ category: "clean", reason: "a".repeat(601) })),
   );

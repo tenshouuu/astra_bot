@@ -4,6 +4,7 @@ import { Api, Context } from "grammy";
 import type { UserFromGetMe, Update } from "grammy/types";
 import type { AppConfig } from "@app/config/env";
 import { createTelegramTools } from "@app/modules/telegram/tools";
+import { createAskHandler } from "@app/modules/telegram/ask";
 import {
   createModerationActions,
   createModerationCallback,
@@ -65,7 +66,13 @@ async function setup(role = "administrator") {
     [3, "member"],
   ]);
   const sent: { chatId: number | string; text: string; buttons: unknown }[] = [];
-  const state = { bans: 0, deletes: 0, deletionFails: false, revokeDuringCheck: false };
+  const state = {
+    bans: 0,
+    deletes: 0,
+    deletionFails: false,
+    revokeDuringCheck: false,
+    profileLookups: 0,
+  };
   const api = new Api(config.botToken);
   api.config.use(async (_previous, method, payload) => {
     if (method === "getChat")
@@ -74,6 +81,7 @@ async function setup(role = "administrator") {
         result: { id: config.allowedChatId, type: "supergroup", title: "Synthetic group" },
       } as never;
     if (method === "getChatMember" && "user_id" in payload) {
+      if (payload.user_id === 3) state.profileLookups++;
       if (payload.user_id === 3 && state.revokeDuringCheck) roles.set(2, "member");
       return {
         ok: true,
@@ -85,6 +93,7 @@ async function setup(role = "administrator") {
         },
       } as never;
     }
+    if (method === "getChatMemberCount") return { ok: true, result: 23 } as never;
     if (method === "sendMessage" && "chat_id" in payload && "text" in payload) {
       sent.push({
         chatId: payload.chat_id,
@@ -129,7 +138,7 @@ void test("members see read-only capabilities and cannot request moderation thro
   const runtime = await createTelegramTools(ctx, config, store, moderation);
   assert.deepEqual(
     runtime.tools.map((tool) => tool.name),
-    ["get_chat_info", "get_member_info", "search_messages"],
+    ["get_chat_info", "get_chat_member_count", "get_my_profile", "search_my_messages"],
   );
   assert.deepEqual(
     await runtime.execute("request_moderation_review", {
@@ -145,6 +154,94 @@ void test("members see read-only capabilities and cannot request moderation thro
   assert.equal(state.bans, 0);
   assert.equal(sent.length, 0);
   await moderation.close();
+});
+
+void test("members have common and self tools; forged targets cannot inspect others", async () => {
+  const { ctx, store, moderation, state } = await setup("member");
+  try {
+    await store.observe({
+      updateId: 2,
+      chatId: BigInt(config.allowedChatId!),
+      userId: 2n,
+      messageId: 11,
+      topicId: 7,
+      text: "My synthetic message",
+      replyText: "",
+      authorLabel: "Self",
+      isBot: false,
+      sentAt: new Date(),
+    });
+    const runtime = await createTelegramTools(ctx, config, store, moderation);
+    assert.equal(runtime.requestContext.actor_role, "member");
+    assert.equal(runtime.requestContext.may_inspect_other_members, false);
+    assert.deepEqual(await runtime.execute("get_chat_member_count", {}), {
+      chat_id: config.allowedChatId,
+      member_count: 23,
+    });
+    const profile = (await runtime.execute("get_my_profile", {})) as { user_id: number };
+    assert.equal(profile.user_id, 2);
+    const search = (await runtime.execute("search_my_messages", { query: "" })) as {
+      messages: { user_id: number; message_id: number }[];
+      user_id_filter: number;
+    };
+    assert.equal(search.user_id_filter, 2);
+    assert.deepEqual(
+      search.messages.map((item) => [item.user_id, item.message_id]),
+      [[2, 11]],
+    );
+    assert.deepEqual(await runtime.execute("get_my_profile", { user_id: 3 }), {
+      error: "invalid_arguments",
+    });
+    assert.deepEqual(await runtime.execute("search_my_messages", { query: "", user_id: 3 }), {
+      error: "invalid_arguments",
+    });
+    assert.deepEqual(await runtime.execute("get_member_info", { user_id: 3 }), {
+      error: "tool_unavailable",
+    });
+    assert.deepEqual(await runtime.execute("search_messages", { query: "", user_id: null }), {
+      error: "tool_unavailable",
+    });
+    assert.equal(state.profileLookups, 0);
+  } finally {
+    await moderation.close();
+  }
+});
+
+void test("admin inspection works independently of moderation and is revoked before returning or sending data", async () => {
+  for (const scenario of ["before", "during-profile", "during-search", "after"] as const) {
+    const { ctx, store, moderation, roles, state } = await setup();
+    try {
+      const runtime = await createTelegramTools(
+        ctx,
+        { ...config, moderationEnabled: false },
+        store,
+      );
+      assert.equal(runtime.requestContext.may_inspect_other_members, true);
+      assert.equal(runtime.requestContext.may_request_moderation_review, false);
+      assert.ok(runtime.tools.some((tool) => tool.name === "get_member_info"));
+      if (scenario === "before") roles.set(2, "member");
+      if (scenario === "during-profile") state.revokeDuringCheck = true;
+      if (scenario === "during-search") {
+        store.search = async () => {
+          roles.set(2, "member");
+          return [{ messageId: 10, userId: 3n, text: "Restricted data", sentAt: new Date() }];
+        };
+      }
+      const result =
+        scenario === "during-search"
+          ? await runtime.execute("search_messages", { query: "", user_id: 3 })
+          : await runtime.execute("get_member_info", { user_id: 3 });
+      if (scenario === "after") {
+        assert.equal((result as { user_id: number }).user_id, 3);
+        assert.equal(await runtime.authorizeResponse!(), true);
+        roles.set(2, "member");
+        assert.equal(await runtime.authorizeResponse!(), false);
+      } else assert.deepEqual(result, { error: "access_denied" });
+      if (scenario === "before") assert.equal(state.profileLookups, 0);
+    } finally {
+      await moderation.close();
+    }
+  }
 });
 
 void test("search and review sources are scoped to the current group/topic and member status comes from Telegram", async () => {
@@ -187,6 +284,43 @@ void test("search and review sources are scoped to the current group/topic and m
   assert.equal(member.account_creation_date, null);
   assert.equal(sent.length, 0);
   await moderation.close();
+});
+
+void test("admin data is not delivered after demotion while composing an answer or between chunks", async () => {
+  for (const betweenChunks of [false, true]) {
+    const { ctx, api, store, moderation, roles, sent } = await setup();
+    const handler = createAskHandler(
+      config,
+      async (_question, _history, runtime) => {
+        const result = (await runtime!.execute("get_member_info", { user_id: 3 })) as {
+          user_id: number;
+        };
+        assert.equal(result.user_id, 3);
+        if (!betweenChunks) roles.set(2, "member");
+        return "a".repeat(7001);
+      },
+      undefined,
+      (request) => createTelegramTools(request, config, store, moderation),
+    );
+    api.config.use(async (previous, method, payload, signal) => {
+      const result = await previous(method, payload, signal);
+      if (betweenChunks && method === "sendMessage") roles.set(2, "member");
+      return result;
+    });
+    try {
+      assert.ok(ctx.has("message:text"));
+      ctx.message.text = "@synthetic_bot проверь участника";
+      await handler.addressed(ctx);
+      await handler.waitForRequests();
+      assert.deepEqual(
+        sent.map((message) => message.text),
+        betweenChunks ? ["a".repeat(3500)] : [],
+      );
+    } finally {
+      await handler.close();
+      await moderation.close();
+    }
+  }
 });
 
 void test("revoking administrator status before or during a tool request prevents notifications and actions", async () => {

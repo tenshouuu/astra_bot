@@ -49,6 +49,9 @@ void test("Responses tool loop advertises strict tools and replays reasoning plu
   assert.equal(requests[0]?.parallel_tool_calls, false);
   assert.deepEqual(requests[0]?.tools, [{ ...tool, type: "function", strict: true }]);
   assert.match(String(requests[0]?.instructions), /owner confirmation/);
+  assert.match(String(requests[0]?.instructions), /targeted activity\/history reports/);
+  assert.match(String(requests[0]?.instructions), /Do not reconstruct a restricted report/);
+  assert.match(String(requests[0]?.instructions), /natural response in Astra's voice/);
   assert.deepEqual((requests[1]?.input as unknown[]).slice(1), [
     reasoning,
     call(),

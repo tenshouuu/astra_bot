@@ -10,6 +10,7 @@ import { createBot } from "@app/modules/telegram/bot";
 import { createClassify } from "@app/modules/openai/moderation";
 import { createModerationStore } from "@app/modules/moderation/store";
 import { createBanAnnouncement } from "@app/modules/openai/ban-announcement";
+import { createDetectAddress } from "@app/modules/openai/address";
 
 const config = getConfig();
 const getBotInfo = createGetBotInfo(config.botToken);
@@ -27,6 +28,7 @@ const bot = createBot(
         generateBanAnnouncement: createBanAnnouncement(config),
       }
     : undefined,
+  createDetectAddress(config),
 );
 const cleanupTimer = setInterval(
   () => {

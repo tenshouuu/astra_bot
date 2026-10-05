@@ -3,7 +3,8 @@
 ## Product
 
 Astra Bot is a Telegram group moderation service and an AI assistant. The assistant answers current
-group members when addressed through `/ask`, a reply to its message, or a Telegram mention.
+group members when addressed through `/ask`, a reply to its message, a Telegram mention, or a
+semantically confirmed direct address using Astra/Астра or an inflected name.
 Chat management is reserved for the owner/administrators. Moderation observes group messages and should escalate uncertain
 or suspicious cases to the owner in a private chat, offering an explicit ban or keep/unban action.
 
@@ -22,19 +23,33 @@ or suspicious cases to the owner in a private chat, offering an explicit ban or 
 ## Current implementation
 
 The service provides Fastify health and Telegram bot-info endpoints, Telegram long polling, and
-an OpenAI Responses API adapter. `/ask`, replies to the bot, and mentions use one bounded request
+an OpenAI Responses API adapter. `/ask`, replies to the bot, mentions and name addresses use one bounded request
 handler. Conversation access is available to current group members and the owner in private chat;
 management access is checked separately and `/reset` remains administrator/owner-only.
 Conversation responses cannot invoke moderation actions. Telegram membership is checked before requesting and before each
 answer chunk. AI requests run in bounded background jobs, with one active request per conversation;
 shutdown drains these jobs before closing memory and the database. `/reset` rejects active conversations.
+Backend tools expose common chat info/member count and caller-bound profile/message search to members.
+Inspection of others and broader message search require live administrator rights, independently of
+whether moderation is enabled. Review requests still require enabled moderation and owner confirmation.
+Administrator rights in the selected group are checked before/after restricted reads and before each
+answer chunk using their results. Group callers see only their current group in the tool scope.
+The assistant is instructed to refuse member-requested profiling/investigations naturally, without
+reconstructing restricted reports from conversation context; public-topic discussion remains allowed.
+Name candidates use an AI intent check inside those jobs (10-second timeout, no retries, 512 tokens),
+before typing or answering. It distinguishes direct address from third-person/quoted references;
+uncertainty, errors and overload stay silent. Code, links, Telegram quotes and forwards are excluded.
 It limits input/output and pending requests, and handles provider failures without logging
 question or answer contents. PostgreSQL/Prisma persist text messages in the configured groups and the
 owner's private chat, isolated by chat and topic. `/ask` includes bounded recent history and a background
 summary. Summarization allows two active jobs and a queue of 64 conversations; scheduling overflow
 is dropped until a later refresh, while messages remain persisted. `/reset` clears the current conversation. Raw messages expire after seven days. Moderation
 observes group text/captions and edits when explicitly enabled. A structured AI classifier considers
-bounded per-user group evidence, USDT offers, and disguised service promotion. Suspicious cases are
+bounded per-user group evidence, USDT offers, and disguised service promotion. It distinguishes clear
+spam-like patterns, advertising, ambiguous posts and creative event announcements; prior genuine
+conversation lowers suspicion and must be considered in the explanation. Creative events are sent
+for coordination without recommending punishment. Event/ambiguous reviews put keeping the participant
+first, while any ban still requires explicit owner confirmation. Suspicious cases are
 sent privately to a numeric owner ID resolved from `OWNER_USERNAME` via Telegram group administrators with permanent-ban/keep callbacks; automatic enforcement
 is not implemented. PostgreSQL stores participant observation counts, seven-day raw evidence, review
 states, and durable audit metadata independently of conversation reset. Two analyses run at once with

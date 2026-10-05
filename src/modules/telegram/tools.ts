@@ -40,6 +40,22 @@ const MEMBER_INFO = definition(
     user_id: { type: "integer", minimum: 1 },
   },
 );
+const MY_PROFILE = definition(
+  "get_my_profile",
+  "Посмотреть свой профиль и статус в текущей группе. Пользователь определяется сервером по автору запроса; чужие профили недоступны через этот инструмент.",
+  {},
+);
+const MY_MESSAGES = definition(
+  "search_my_messages",
+  "Найти свои сообщения за последние 7 дней в текущем чате/теме, до 3 результатов. query — подстрока или пустая строка. Автор определяется сервером, подменить его нельзя.",
+  { query: { type: "string", maxLength: 200 } },
+);
+const MEMBER_COUNT = definition(
+  "get_chat_member_count",
+  "Узнать текущее количество участников в этой группе без списка людей и проверки чужих профилей. Это не число активных участников.",
+  {},
+);
+const ADMIN_TOOLS = new Set(["get_member_info", "search_messages", "request_moderation_review"]);
 const SEARCH = definition(
   "search_messages",
   "Найти полученные ботом сообщения настроенной группы за последние 7 дней: до 3 результатов, не полный просмотр истории. Не делай вывод об отсутствии других сообщений по этой выборке. query — подстрока, пустая строка означает последние сообщения; user_id — фильтр автора или null. В группе поиск ограничен текущей темой; в личке владельца доступна вся группа. Старую историю Telegram импортировать нельзя.",
@@ -71,11 +87,14 @@ export async function createTelegramTools(
   const chat = ctx.chat;
   const actor = ctx.from;
   if (!chat || !actor) throw new Error("Missing assistant request scope");
-  const mayManage = Boolean(moderation && (await canManageChat(ctx, config)));
+  const isAdmin = await canManageChat(ctx, config);
+  const mayManage = Boolean(moderation && isAdmin);
   const chatIds = configuredChatIds(config);
   const needsChatSelection = chat.type === "private" && chatIds.length > 1;
-  let tools = [CHAT_INFO, MEMBER_INFO];
-  if (store) tools.push(SEARCH);
+  let tools = [CHAT_INFO, MEMBER_COUNT, MY_PROFILE];
+  if (store) tools.push(MY_MESSAGES);
+  if (isAdmin) tools.push(MEMBER_INFO);
+  if (store && isAdmin) tools.push(SEARCH);
   if (store && moderation && mayManage) tools.push(REQUEST_REVIEW);
   if (needsChatSelection) {
     tools = tools.map((tool) =>
@@ -96,6 +115,16 @@ export async function createTelegramTools(
     reply &&
     reply.chat.id === chat.id &&
     (reply.message_thread_id ?? 0) === (ctx.message?.message_thread_id ?? 0);
+  const adminDataChats = new Set<number>();
+
+  async function canInspect(chatId: number): Promise<boolean> {
+    if (!(await canAsk(ctx, config))) return false;
+    const member = await ctx.api.getChatMember(chatId, actor!.id);
+    return (
+      member.user.id === actor!.id &&
+      (member.status === "creator" || member.status === "administrator")
+    );
+  }
 
   async function group(selectedChatId: unknown) {
     if (
@@ -117,9 +146,15 @@ export async function createTelegramTools(
 
   return {
     tools,
+    authorizeResponse: async () => {
+      for (const chatId of adminDataChats) if (!(await canInspect(chatId))) return false;
+      return true;
+    },
     requestContext: {
       actor_id: actor.id,
-      available_chat_ids: chatIds,
+      actor_role: chat.type === "private" ? "owner" : isAdmin ? "administrator" : "member",
+      may_inspect_other_members: isAdmin,
+      available_chat_ids: chat.type === "private" ? chatIds : [chat.id],
       chat_id: chat.type === "private" ? (chatIds.length === 1 ? chatIds[0] : null) : chat.id,
       conversation: chat.type === "private" ? "owner_private_chat" : "configured_group",
       topic_id: topicId ?? null,
@@ -152,6 +187,9 @@ export async function createTelegramTools(
       )
         return { error: "invalid_chat_selection" };
       const current = await group(args.chat_id);
+      const requiresAdmin = ADMIN_TOOLS.has(name);
+      if (requiresAdmin && !(await canInspect(current.id))) return { error: "access_denied" };
+      if (requiresAdmin) adminDataChats.add(current.id);
       if (name === "get_chat_info") {
         return {
           chat_id: current.id,
@@ -169,10 +207,18 @@ export async function createTelegramTools(
           automatic_enforcement: false,
         };
       }
-      if (name === "get_member_info") {
-        if (!positiveId(args.user_id)) return { error: "invalid_arguments" };
-        const member = await ctx.api.getChatMember(current.id, args.user_id);
-        if (member.user.id !== args.user_id) return { error: "identity_unavailable" };
+      if (name === "get_chat_member_count") {
+        const count = await ctx.api.getChatMemberCount(current.id);
+        if (!(await canAsk(ctx, config))) return { error: "access_denied" };
+        return { chat_id: current.id, member_count: count };
+      }
+      if (name === "get_member_info" || name === "get_my_profile") {
+        const userId = name === "get_my_profile" ? actor.id : args.user_id;
+        if (!positiveId(userId)) return { error: "invalid_arguments" };
+        const member = await ctx.api.getChatMember(current.id, userId);
+        if (member.user.id !== userId) return { error: "identity_unavailable" };
+        if (!(await (requiresAdmin ? canInspect(current.id) : canAsk(ctx, config))))
+          return { error: "access_denied" };
         return {
           user_id: member.user.id,
           username: member.user.username ?? null,
@@ -182,11 +228,12 @@ export async function createTelegramTools(
           account_creation_date: null,
         };
       }
-      if (name === "search_messages") {
+      if (name === "search_messages" || name === "search_my_messages") {
+        const userId = name === "search_my_messages" ? actor.id : args.user_id;
         if (
           typeof args.query !== "string" ||
           args.query.length > 200 ||
-          (args.user_id !== null && !positiveId(args.user_id))
+          (userId !== null && !positiveId(userId))
         ) {
           return { error: "invalid_arguments" };
         }
@@ -194,8 +241,10 @@ export async function createTelegramTools(
           BigInt(current.id),
           topicId,
           args.query,
-          args.user_id === null ? null : BigInt(args.user_id),
+          userId === null ? null : BigInt(userId),
         );
+        if (!(await (requiresAdmin ? canInspect(current.id) : canAsk(ctx, config))))
+          return { error: "access_denied" };
         return {
           messages: messages.map((item) => ({
             message_id: item.messageId,
@@ -206,7 +255,7 @@ export async function createTelegramTools(
           chat_id: current.id,
           topic_id: topicId ?? null,
           query: args.query,
-          user_id_filter: args.user_id,
+          user_id_filter: userId,
           result_limit: 3,
           exhaustive: false,
           history:
@@ -231,7 +280,7 @@ export async function createTelegramTools(
           actor.id,
           args.action,
           args.reason.trim(),
-          () => canManageChat(ctx, config),
+          () => canInspect(current.id),
         );
         return {
           status,

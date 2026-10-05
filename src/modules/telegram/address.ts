@@ -1,5 +1,31 @@
 import type { Context, Filter } from "grammy";
 
+export function hasNameCandidate(ctx: Filter<Context, "message:text">): boolean {
+  const message = ctx.message;
+  if (message.forward_origin || message.text.startsWith("/")) return false;
+  const names =
+    /(?<![\p{L}\p{N}_@/])(?:астр(?:а|е|у|ы|ой|ою)|astr(?:a|e|u|y|oy|oi))(?![\p{L}\p{N}_])/giu;
+  return [...message.text.matchAll(names)].some((match) => {
+    const end = match.index + match[0].length;
+    return !message.entities?.some(
+      (entity) =>
+        entity.offset < end &&
+        entity.offset + entity.length > match.index &&
+        [
+          "code",
+          "pre",
+          "text_link",
+          "url",
+          "email",
+          "blockquote",
+          "expandable_blockquote",
+          "mention",
+          "text_mention",
+        ].includes(entity.type),
+    );
+  });
+}
+
 export function addressedQuestion(ctx: Filter<Context, "message:text">): string | undefined {
   const message = ctx.message;
   if (message.entities?.some((entity) => entity.type === "bot_command" && entity.offset === 0)) {

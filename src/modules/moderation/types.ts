@@ -31,7 +31,7 @@ export type ReviewCase = Observation & {
 };
 
 export type Classification = Readonly<{
-  category: "clean" | "advertising" | "suspicious";
+  category: "clean" | "spam" | "advertising" | "suspicious" | "community_event";
   reason: string;
 }>;
 

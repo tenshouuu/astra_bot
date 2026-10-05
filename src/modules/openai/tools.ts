@@ -8,4 +8,5 @@ export type AssistantRuntime = Readonly<{
   tools: readonly AssistantTool[];
   requestContext: Record<string, unknown>;
   execute(name: string, args: unknown): Promise<unknown>;
+  authorizeResponse?(): Promise<boolean>;
 }>;

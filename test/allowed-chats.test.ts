@@ -124,6 +124,7 @@ void test("access and management accept both configured groups and reject others
 void test("tools remain in the current group and private tools require an allowed explicit chat selection", async () => {
   const group = context(-200);
   const runtime = await createTelegramTools(group.ctx, config);
+  assert.deepEqual(runtime.requestContext.available_chat_ids, [-200]);
   const result = await runtime.execute("get_chat_info", {});
   assert.equal((result as { chat_id: number }).chat_id, -200);
   assert.deepEqual(await runtime.execute("get_chat_info", { chat_id: -100 }), {
@@ -153,6 +154,40 @@ void test("tools remain in the current group and private tools require an allowe
   await privateRuntime.execute("search_messages", { chat_id: -200, query: "", user_id: null });
   assert.deepEqual(searches, [-100n, -200n]);
   assert.deepEqual(owner.calls, [-200, -100, -200]);
+});
+
+void test("private owner inspection requires administrator rights in the selected group", async () => {
+  const owner = context(1, true);
+  owner.ctx.api.config.use(async (previous, method, payload, signal) => {
+    if (
+      method === "getChatMember" &&
+      "chat_id" in payload &&
+      payload.chat_id === -200 &&
+      "user_id" in payload
+    )
+      return {
+        ok: true,
+        result: {
+          status: "member",
+          user: { id: payload.user_id, is_bot: false, first_name: "Synthetic" },
+        },
+      } as never;
+    return previous(method, payload, signal);
+  });
+  const { store } = fakeModerationStore();
+  const searches: bigint[] = [];
+  store.search = async (chatId) => {
+    searches.push(chatId);
+    return [];
+  };
+  const runtime = await createTelegramTools(owner.ctx, config, store);
+  assert.deepEqual(
+    await runtime.execute("search_messages", { chat_id: -200, query: "", user_id: null }),
+    { error: "access_denied" },
+  );
+  assert.deepEqual(searches, []);
+  await runtime.execute("search_messages", { chat_id: -100, query: "", user_id: null });
+  assert.deepEqual(searches, [-100n]);
 });
 
 void test("moderation validates the case chat and rejects a substituted Telegram chat", async () => {

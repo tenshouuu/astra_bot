@@ -7,6 +7,7 @@ import { createAsk, type ResponsesClient, type Ask } from "@app/modules/openai/a
 import { createBot } from "@app/modules/telegram/bot";
 import { splitAnswer } from "@app/modules/telegram/ask";
 import { characterInstructions } from "@app/modules/openai/character";
+import type { DetectAddress } from "@app/modules/openai/address";
 import type { MessageEntity, Update } from "grammy/types";
 
 const config: AppConfig = {
@@ -46,8 +47,9 @@ function setup(
   statuses = ["administrator"],
   memory?: ConversationMemory,
   botConfig = config,
+  detectAddress?: DetectAddress,
 ) {
-  const bot = createBot(botConfig, ask, memory);
+  const bot = createBot(botConfig, ask, memory, undefined, detectAddress);
   bot.botInfo = {
     id: 42,
     is_bot: true,
@@ -82,6 +84,154 @@ function setup(
   });
   return { bot, replies, replyEntities };
 }
+
+void test("name forms reach intent detection and only direct addresses produce answers", async () => {
+  for (const [text, addressed] of [
+    ["Астра, что думаешь?", true],
+    ["Что скажешь, Astra?", true],
+    ["Вопрос к Астре: поможешь?", true],
+    ["Астру хочу спросить: как выбрать цвет?", true],
+    ["Астра привет", true],
+    ["Говорили об Астре", false],
+    ["Обсуждали это с Астрой", false],
+    ["Жду ответа Астры", false],
+    ["Он делился с Астрою идеями", false],
+    ["Astra Linux обновилась", false],
+    ["Он сказал: «Астра, помоги»", false],
+  ] as const) {
+    let detections = 0;
+    const { bot, replies } = setup(
+      async (question) => {
+        assert.equal(addressed, true);
+        assert.equal(question, text);
+        return "Synthetic response";
+      },
+      ["member"],
+      undefined,
+      config,
+      async (evidence) => {
+        detections++;
+        assert.equal(evidence.text, text);
+        return addressed;
+      },
+    );
+    const request = update(text);
+    assert.ok(request.message);
+    request.message.entities = [];
+    await bot.handleUpdate(request);
+    await bot.waitForRequests();
+    assert.equal(detections, 1);
+    assert.deepEqual(replies, addressed ? ["Synthetic response"] : []);
+    await bot.closeRequests();
+  }
+});
+
+void test("name screening skips unrelated words, links, code, quotes, forwards and commands", async () => {
+  for (const [text, type] of [
+    ["Астрахань красива", undefined],
+    ["Привет всем", undefined],
+    ["Astra", "code"],
+    ["Астра", "blockquote"],
+    ["https://example.test/Astra", "url"],
+    ["Астра", "text_link"],
+    ["/unknown Астра", undefined],
+    ["Астра, помоги", "forward"],
+  ] as const) {
+    const { bot, replies } = setup(
+      async () => assert.fail("Unexpected answer"),
+      ["member"],
+      undefined,
+      config,
+      async () => assert.fail("Unexpected intent request"),
+    );
+    const request = update(text);
+    assert.ok(request.message);
+    request.message.entities =
+      type && type !== "forward"
+        ? [
+            {
+              type,
+              offset: 0,
+              length: text.length,
+              ...(type === "text_link" ? { url: "https://example.test" } : {}),
+            } as MessageEntity,
+          ]
+        : [];
+    if (type === "forward")
+      request.message.forward_origin = {
+        type: "hidden_user",
+        date: 1,
+        sender_user_name: "Synthetic",
+      };
+    await bot.handleUpdate(request);
+    await bot.waitForRequests();
+    assert.deepEqual(replies, []);
+    await bot.closeRequests();
+  }
+});
+
+void test("intent failure and lost membership remain silent", async () => {
+  for (const scenario of ["failure", "removed-before", "removed-during", "other-chat"] as const) {
+    const { bot, replies } = setup(
+      async () => assert.fail("Unexpected answer"),
+      scenario === "removed-before"
+        ? ["left"]
+        : scenario === "removed-during"
+          ? ["member", "left"]
+          : ["member"],
+      undefined,
+      config,
+      async () => {
+        if (scenario === "removed-before" || scenario === "other-chat")
+          assert.fail("Unauthorized intent request");
+        if (scenario === "failure") throw new Error("Synthetic timeout");
+        return true;
+      },
+    );
+    const request = update("Астра, помоги");
+    assert.ok(request.message);
+    request.message.entities = [];
+    if (scenario === "other-chat")
+      request.message.chat = { id: -200, type: "group", title: "Other" };
+    await bot.handleUpdate(request);
+    await bot.waitForRequests();
+    assert.deepEqual(replies, []);
+    await bot.closeRequests();
+  }
+});
+
+void test("name intent jobs deduplicate updates, respect conversation limits and drain on shutdown", async () => {
+  let release!: (addressed: boolean) => void;
+  let detections = 0;
+  const { bot, replies } = setup(
+    async () => assert.fail("Not addressed"),
+    ["member"],
+    undefined,
+    config,
+    () => {
+      detections++;
+      return new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+    },
+  );
+  const request = update("Говорили об Астре");
+  assert.ok(request.message);
+  request.message.entities = [];
+  await bot.handleUpdate(request);
+  await bot.handleUpdate(request);
+  await bot.handleUpdate({ ...request, update_id: 2 });
+  assert.equal(detections, 1);
+  assert.deepEqual(replies, []);
+  let closed = false;
+  const closing = bot.closeRequests().then(() => {
+    closed = true;
+  });
+  assert.equal(closed, false);
+  release(false);
+  await closing;
+  assert.equal(closed, true);
+});
 
 void test("ask authorizes admins, trims input and splits long answers", async () => {
   const { bot, replies, replyEntities } = setup(async (input) => {
@@ -126,6 +276,88 @@ void test("ask suppresses output when group membership is revoked", async () => 
   await bot.handleUpdate(update("/ask question"));
   await bot.waitForRequests();
   assert.deepEqual(replies, []);
+});
+
+void test("tool initialization failure replies to explicit or confirmed requests and releases the job", async () => {
+  for (const trigger of ["command", "mention", "reply", "name"] as const) {
+    let requests = 0;
+    let checks = 0;
+    const { bot, replies } = setup(
+      async () => {
+        requests++;
+        return "Synthetic answer";
+      },
+      ["member"],
+      undefined,
+      config,
+      async () => true,
+    );
+    bot.api.config.use(async (previous, method, payload, signal) => {
+      if (method === "getChatMember" && ++checks === (trigger === "name" ? 3 : 2))
+        throw new Error("Synthetic Telegram failure during tool initialization");
+      return previous(method, payload, signal);
+    });
+    const request = update(
+      trigger === "command"
+        ? "/ask question"
+        : trigger === "mention"
+          ? "@test_bot question"
+          : trigger === "name"
+            ? "Астра, помоги"
+            : "question",
+    );
+    assert.ok(request.message);
+    if (trigger !== "command") request.message.entities = [];
+    if (trigger === "reply")
+      request.message.reply_to_message = {
+        message_id: 9,
+        date: 0,
+        chat: request.message.chat,
+        from: { id: 42, is_bot: true, first_name: "Astra" },
+        text: "Synthetic previous answer",
+      } as NonNullable<typeof request.message.reply_to_message>;
+    try {
+      await bot.handleUpdate(request);
+      await bot.waitForRequests();
+      assert.equal(requests, 0);
+      assert.deepEqual(replies, ["С ответом не вышло. Попробуй спросить ещё раз чуть позже."]);
+      await bot.handleUpdate(request);
+      assert.equal(replies.length, 1);
+      await bot.handleUpdate({ ...request, update_id: 2 });
+      await bot.waitForRequests();
+      assert.equal(requests, 1);
+      assert.equal(replies.at(-1), "Synthetic answer");
+    } finally {
+      await bot.closeRequests();
+    }
+  }
+});
+
+void test("unconfirmed name candidates never initialize tools or send retry messages", async () => {
+  let checks = 0;
+  const { bot, replies } = setup(
+    async () => assert.fail("Unexpected answer"),
+    ["member"],
+    undefined,
+    config,
+    async () => false,
+  );
+  bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "getChatMember" && ++checks > 1)
+      throw new Error("Unexpected tool initialization");
+    return previous(method, payload, signal);
+  });
+  const request = update("Вчера обсуждали это с Астрой");
+  assert.ok(request.message);
+  request.message.entities = [];
+  try {
+    await bot.handleUpdate(request);
+    await bot.waitForRequests();
+    assert.equal(checks, 1);
+    assert.deepEqual(replies, []);
+  } finally {
+    await bot.closeRequests();
+  }
 });
 
 void test("ask handles provider failure and releases pending request", async () => {
@@ -383,7 +615,18 @@ void test("configured group ID takes precedence over a matching username", async
 });
 
 void test("ask stops chunk delivery when access is revoked between sends", async () => {
-  const { bot, replies } = setup(async () => "a".repeat(7001), ["member", "member", "left"]);
+  const { bot, replies } = setup(async () => "a".repeat(7001), ["member"]);
+  bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "getChatMember" && "user_id" in payload && replies.length > 0)
+      return {
+        ok: true,
+        result: {
+          status: "left",
+          user: { id: payload.user_id, is_bot: false, first_name: "Synthetic" },
+        },
+      } as never;
+    return previous(method, payload, signal);
+  });
   await bot.handleUpdate(update("/ask question"));
   await bot.waitForRequests();
   assert.deepEqual(replies, ["a".repeat(3500)]);

@@ -15,19 +15,36 @@ function excerpt(text: string, limit: number): string {
 }
 
 export function reviewText(item: ReviewCase): string {
+  const assessments: Record<string, string> = {
+    spam: "выраженные признаки спама в тексте или повторах; это не доказательство, что автор — бот",
+    advertising: "явная реклама или предложение продажи",
+    suspicious: "неоднозначное сообщение; нужна твоя оценка",
+    community_event: "анонс творческого события; нужно согласование",
+  };
+  const cautious =
+    !item.requestedBy && (item.category === "community_event" || item.category === "suspicious");
   const sourceLink = item.chatId.toString().startsWith("-100")
     ? `https://t.me/c/${item.chatId.toString().slice(4)}/${item.messageId}`
     : `Сообщение №${item.messageId}`;
   return [
     item.action === "delete"
       ? "Запрос на удаление сообщения. Действие пока не выполнено."
-      : "Подозрительное сообщение в чате. Бан пока не выполнен.",
+      : cautious
+        ? "Посмотри, пожалуйста, этот пост. Пока всё оставила как есть."
+        : "Подозрительное сообщение в чате. Бан пока не выполнен.",
     `Автор: ${item.authorLabel} (ID ${item.userId})`,
     `Впервые замечен: ${item.firstSeenAt.toISOString().slice(0, 10)}. Получено сообщений: ${item.messageCount}.`,
     "Это история наблюдений бота, а не возраст аккаунта.",
     item.requestedBy
       ? `Запрос администратора (ID ${item.requestedBy}).`
-      : `Оценка AI: ${item.category === "advertising" ? "реклама" : "подозрительная активность"}.`,
+      : `Оценка AI: ${assessments[item.category ?? ""] ?? "нужна твоя оценка"}.`,
+    ...(cautious
+      ? [
+          item.category === "community_event"
+            ? "Сам по себе творческий анонс — не основание для бана или удаления. Предлагаю согласовать пост; решение за тобой."
+            : "Оснований рекомендовать бан или удаление недостаточно. Нужна твоя оценка контекста.",
+        ]
+      : []),
     `Причина${item.requestedBy ? " запроса" : " AI"}: ${excerpt(item.reason ?? "Не указана", 600)}`,
     "Текст сообщения:",
     excerpt(item.text, 1200),
@@ -100,18 +117,26 @@ export function createModerationActions(
     eligibility,
     async notify(item) {
       if ((await eligibility(item)) !== "allowed") return undefined;
+      const cautious =
+        !item.requestedBy &&
+        (item.category === "community_event" || item.category === "suspicious");
+      const action = {
+        text:
+          item.action === "delete"
+            ? "Удалить сообщение"
+            : cautious
+              ? "Всё же забанить и удалить его сообщения"
+              : "Забанить навсегда",
+        callback_data: `mod:${item.action === "delete" ? "delete" : "ban"}:${item.id}`,
+      };
+      const keep = {
+        text: cautious ? "Оставить без санкций" : "Оставить",
+        callback_data: `mod:keep:${item.id}`,
+      };
       const message = await api.sendMessage(config.ownerUserId!, reviewText(item), {
         link_preview_options: { is_disabled: true },
         reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: item.action === "delete" ? "Удалить сообщение" : "Забанить навсегда",
-                callback_data: `mod:${item.action === "delete" ? "delete" : "ban"}:${item.id}`,
-              },
-              { text: "Оставить", callback_data: `mod:keep:${item.id}` },
-            ],
-          ],
+          inline_keyboard: cautious ? [[keep], [action]] : [[action, keep]],
         },
       });
       return message.message_id;

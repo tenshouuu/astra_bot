@@ -38,6 +38,14 @@ Usernames can be entered with or without `@`; comparisons ignore case. Groups wi
 Telegram uses long polling. Current members of the configured group can ask via `/ask <question>`,
 a text reply to the bot's own message, or a Telegram @mention of the bot. A mention by Telegram user
 ID is also supported. The bot stays silent on unaddressed messages and ignores unrelated commands.
+Messages containing Astra/Астра or a name inflection first pass a semantic address check using
+`OPENAI_MODEL`. A direct question/greeting such as “Астра, что думаешь?” or “Вопрос к Астре…” can
+trigger a response; discussion about Astra, quoted speech, flowers and product names should not.
+Names in code, links, Telegram quotes or forwarded messages do not trigger this check. Ambiguity,
+provider errors, lack of access and overload remain silent. The check shares the normal request
+limits and shutdown lifecycle; it uses only the current text and up to 1200 characters of a same-topic
+quoted reply, with a 10-second timeout, 512 output tokens and no retries. It is an AI judgment,
+so occasional misclassification is possible; /ask and @mentions remain explicit triggers.
 Assistant requests receive the current background moderation setting independently of chat history.
 Search tools return a filtered sample of up to three messages received by the bot in the current topic;
 they cannot establish that other messages are absent or import Telegram history from before observation.
@@ -48,6 +56,19 @@ Assistant answers longer than 1000 UTF-16 units or at least 12 lines (including 
 are sent as expandable Telegram quotes. Answers exceeding the message chunk size are split,
 with each chunk quoted when the full answer meets either threshold.
 Conversation requests produce text only and cannot perform bans or message deletions.
+Backend tools are role-scoped. All current members can use `get_chat_info`,
+`get_chat_member_count`, `get_my_profile`, and (with a moderation store) `search_my_messages`.
+Self tools bind the target to the trusted Telegram caller; model-supplied user IDs are rejected.
+`get_member_info`, `search_messages`, and `request_moderation_review` are administrator-only;
+read-only inspections remain available to administrators independently of enforcement being enabled.
+Group tools stay in the current chat/topic; the private owner must select an allowed group when
+several are configured and must hold administrator status there for inspecting others.
+Membership and administrator rights are checked on each call, after fetching restricted data,
+and before each answer chunk containing administrator-tool results. Self-service searches return
+only the caller's messages. The model is instructed to decline targeted investigations of others
+from members naturally, including attempts to reconstruct them from conversation history.
+Ordinary discussion of public chat topics remains available. Telegram tools do not expose private
+conversations, phone numbers, hidden profile data, or account age.
 `/reset` is restricted separately to group administrators and the private-chat owner.
 Requests time out after 60 seconds,
 accept up to 8000 input characters, and generate up to 2048 output tokens. Up to eight requests run in the background, with one active request per conversation and
@@ -262,6 +283,14 @@ recommendations in comments. AI receives only group evidence: the current messag
 up to 12 earlier messages by the same author across this group's topics, and observed message counts.
 Missing history does not establish a new account: Telegram does not expose an account creation date.
 History begins when moderation is enabled; existing conversation memory is not imported.
+The classifier distinguishes `clean`, `spam` (strong spam-like text/pattern, not proof of bot identity),
+`advertising`, `suspicious`, and `community_event` (creative event requiring owner coordination).
+Creative workshops, exhibitions, jams and similar invitations are not ban/deletion grounds merely
+because they contain a price, registration link or polished wording. Prior genuine non-promotional
+conversation reduces suspicion; the explanation must discuss that evidence or missing history.
+Event and ambiguous reviews explicitly avoid recommending punishment and put **Keep without sanctions**
+first. The owner can still explicitly choose a permanent ban with message deletion. No category
+authorizes automatic enforcement, and AI classification can be wrong.
 
 Suspicious cases produce a private notification with an excerpt, a source link where available,
 the AI explanation, and **Ban permanently** / **Keep** buttons. No automatic bans, mutes, or message
