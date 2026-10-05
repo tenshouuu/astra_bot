@@ -19,11 +19,17 @@ void test("ban announcement uses Astra's character and only trusted facts with a
         assert.equal(body.max_output_tokens, 1024);
         assert.equal("tools" in body, false);
         assert.deepEqual(options, { timeout: 10_000, maxRetries: 0 });
-        return { status: "completed", output_text: "  Разобралась. Продолжаем разговор.  " };
+        return {
+          status: "completed",
+          output_text: "  Модераторская совесть довольна. Премию принимаю мемами.  ",
+        };
       },
     },
   } as unknown as ResponsesClient;
-  assert.equal(await createBanAnnouncement(config, client)(), "Разобралась. Продолжаем разговор.");
+  assert.equal(
+    await createBanAnnouncement(config, client)(),
+    "Модераторская совесть довольна. Премию принимаю мемами.",
+  );
 });
 
 void test("invalid, incomplete and failed generations are rejected and release capacity", async () => {

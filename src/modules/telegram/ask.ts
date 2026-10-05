@@ -29,20 +29,22 @@ async function checkAccess(
   manage = false,
   silent = false,
 ): Promise<boolean> {
+  // Denials in a group would themselves let members flood the chat with bot replies.
+  const quiet = silent || ctx.chat.type !== "private";
   let allowed: boolean;
   try {
     allowed = await (manage ? canManageChat(ctx, config) : canAsk(ctx, config));
   } catch {
-    if (!silent)
+    if (!quiet)
       await ctx.reply("Не смогла проверить, могу ли я тебе отвечать. Попробуй ещё раз чуть позже.");
     return false;
   }
 
-  if (!allowed && !silent) {
+  if (!allowed && !quiet) {
     await ctx.reply(
       manage
         ? "Управлять чатом могут только администраторы нашей группы, а владелец — ещё и в личке."
-        : "Я отвечаю участникам нашей группы, а владельцу — ещё и в личке.",
+        : "Я отвечаю администраторам нашей группы, а владельцу — ещё и в личке.",
     );
   }
   return allowed;

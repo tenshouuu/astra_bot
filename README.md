@@ -24,7 +24,7 @@ If both are set, the ID list takes precedence. A single ID remains supported.
 before access checks, including groups not yet allowed. Question text is not logged.
 Adding the bot to a group or changing its membership writes `Telegram bot chat membership changed`
 to the server log with `chatId`, even for groups outside the allowlist.
-`/chatid` in a group replies with its numeric ID and writes `chatId` to the server log,
+`/chatid` from a group administrator replies with its numeric ID and writes `chatId` to the server log,
 including groups not yet in the allowlist. Add the returned ID to `ALLOWED_CHAT_ID` and restart.
 In groups, assistant tools are scoped to the current chat and topic. When several groups are configured,
 owner-private tool calls require an explicit allowed `chat_id`; specify the group in your request. For the local Compose database, also set `POSTGRES_PASSWORD` and use
@@ -35,7 +35,7 @@ For an existing PostgreSQL instance, Compose is optional. Migrations create new 
 
 The HTTP surface exposes `GET /health`, `GET /ready`, and `GET /me` on port `3000`.
 Usernames can be entered with or without `@`; comparisons ignore case. Groups without a public username are authorized by ID.
-Telegram uses long polling. Current members of the configured group can ask via `/ask <question>`,
+Telegram uses long polling. Only current administrators of the configured group can ask via `/ask <question>`,
 a text reply to the bot's own message, or a Telegram @mention of the bot. A mention by Telegram user
 ID is also supported. The bot stays silent on unaddressed messages and ignores unrelated commands.
 Messages containing Astra/Астра or a name inflection first pass a semantic address check using
@@ -47,7 +47,7 @@ limits and shutdown lifecycle; it uses only the current text and up to 1200 char
 quoted reply, with a 10-second timeout, 512 output tokens and no retries. It is an AI judgment,
 so occasional misclassification is possible; /ask and @mentions remain explicit triggers.
 After a successfully delivered assistant answer, an active conversation window lasts two minutes
-in that chat/topic. Any current member may continue without a tag if a separate intent check confirms
+in that chat/topic. Any current administrator may continue without a tag if a separate intent check confirms
 they are addressing Astra. The check sees up to six recent turns with speaker IDs (600 characters
 each); human-to-human messages do not renew the window. Ambiguity/errors remain silent, closing
 acknowledgments close the window, and tools/permissions are rebuilt for the current author.
@@ -60,12 +60,15 @@ Search tools return a filtered sample of up to three messages received by the bo
 they cannot establish that other messages are absent or import Telegram history from before observation.
 These entry points share conversation memory, duplicate-update protection, and request limits.
 Private assistant access remains limited to the configured owner; bots and anonymous senders cannot
-use the assistant. Membership is checked before analysis and before each answer chunk.
+use the assistant. Administrator status is checked before analysis and before each answer chunk.
+Ordinary members are silently ignored, including `/ask`, replies, mentions, name addresses and
+continuations; no conversational AI or intent detection runs for them. `/ping` and `/reset` are also
+restricted, while background moderation and group memory capture continue for all participants.
 Assistant answers longer than 1000 UTF-16 units or at least 12 lines (including blank lines)
 are sent as expandable Telegram quotes. Answers exceeding the message chunk size are split,
 with each chunk quoted when the full answer meets either threshold.
 Conversation requests produce text only and cannot perform bans or message deletions.
-Backend tools are role-scoped. All current members can use `get_chat_info`,
+Backend tools are role-scoped. Current administrators can use `get_chat_info`,
 `get_chat_member_count`, `get_my_profile`, and (with a moderation store) `search_my_messages`.
 Self tools bind the target to the trusted Telegram caller; model-supplied user IDs are rejected.
 `get_member_info`, `search_messages`, and `request_moderation_review` are administrator-only;
@@ -76,7 +79,7 @@ Membership and administrator rights are checked on each call, after fetching res
 and before each answer chunk containing administrator-tool results. Self-service searches return
 only the caller's messages. The model is instructed to decline targeted investigations of others
 from members naturally, including attempts to reconstruct them from conversation history.
-Ordinary discussion of public chat topics remains available. Telegram tools do not expose private
+Ordinary discussion of public chat topics is currently available only to administrators. Telegram tools do not expose private
 conversations, phone numbers, hidden profile data, or account age.
 `/reset` is restricted separately to group administrators and the private-chat owner.
 Requests time out after 60 seconds,
@@ -238,7 +241,7 @@ Generate the Prisma client after installing dependencies with `pnpm db:generate`
 Ordinary text received in the allowed group and the owner's private chat contributes to context.
 Each group topic has separate shared memory; private chats are isolated by Telegram chat ID.
 Other chats are ignored. Commands other than `/ask` are excluded. The bot also handles `/ping` and `/reset`.
-Group members' text contributes shared context, and current members can address the assistant.
+Group members' text contributes shared context; only current administrators can address the assistant.
 For ordinary group messages to reach the bot, make it a group administrator or disable privacy mode
 in BotFather. Memory starts with updates the bot receives; this implementation does not import earlier
 Telegram history. Edited messages, attachments, and messages from other bots are not collected.

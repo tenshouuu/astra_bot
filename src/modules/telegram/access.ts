@@ -42,23 +42,6 @@ export function isAllowedGroup(
   );
 }
 
-export async function canAsk(ctx: Context, config: AppConfig): Promise<boolean> {
-  if (!ctx.from || ctx.from.is_bot || ctx.message?.sender_chat || !isMemoryChat(ctx, config))
-    return false;
-
-  if (ctx.chat?.type === "private") return true;
-
-  if (!ctx.chat) return false;
-  const member = await ctx.api.getChatMember(ctx.chat.id, ctx.from.id);
-  if (member.user.id !== ctx.from.id) return false;
-  return (
-    member.status === "creator" ||
-    member.status === "administrator" ||
-    member.status === "member" ||
-    (member.status === "restricted" && member.is_member)
-  );
-}
-
 export async function canManageChat(ctx: Context, config: AppConfig): Promise<boolean> {
   if (!ctx.from || ctx.from.is_bot || ctx.message?.sender_chat || !isMemoryChat(ctx, config))
     return false;
@@ -68,3 +51,6 @@ export async function canManageChat(ctx: Context, config: AppConfig): Promise<bo
   if (member.user.id !== ctx.from.id) return false;
   return member.status === "creator" || member.status === "administrator";
 }
+
+// Conversation is currently limited to the same administrators as chat management.
+export const canAsk = canManageChat;

@@ -16,6 +16,7 @@ import { Bot } from "grammy";
 import { resolveOwnerId } from "@app/modules/telegram/owner";
 import { addressedQuestion } from "@app/modules/telegram/address";
 import { createTelegramTools } from "@app/modules/telegram/tools";
+import { canAsk } from "@app/modules/telegram/access";
 
 export function createBot(
   config: AppConfig,
@@ -70,6 +71,14 @@ export function createBot(
 
   bot.command("chatid", async (ctx) => {
     if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
+    // Administrators need this command before the group has been added to the allowlist.
+    if (!ctx.from || ctx.from.is_bot || ctx.message?.sender_chat) return;
+    const member = await ctx.api.getChatMember(ctx.chat.id, ctx.from.id);
+    if (
+      member.user.id !== ctx.from.id ||
+      (member.status !== "administrator" && member.status !== "creator")
+    )
+      return;
     console.info("Telegram chat ID requested", { chatId: ctx.chat.id });
     await ctx.reply(`ID этого чата: ${ctx.chat.id}`);
   });
@@ -88,6 +97,7 @@ export function createBot(
   if (memory) bot.use(captureMessages(botConfig, memory));
 
   bot.command("ping", async (ctx) => {
+    if (!(await canAsk(ctx, botConfig))) return;
     await ctx.reply("Я тут, слушаю.");
   });
 

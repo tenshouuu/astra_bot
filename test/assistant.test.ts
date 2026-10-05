@@ -75,7 +75,11 @@ function setup(
       const status = statuses[Math.min(checks++, statuses.length - 1)];
       return {
         ok: true,
-        result: { status, user: { id: payload.user_id, is_bot: false, first_name: "Test" } },
+        result: {
+          status,
+          is_member: true,
+          user: { id: payload.user_id, is_bot: false, first_name: "Test" },
+        },
       } as never;
     }
     if (method === "sendMessage" && "text" in payload) {
@@ -108,7 +112,7 @@ void test("an untagged answer continues Astra's question and a closing acknowled
       assert.ok(context?.some((entry) => entry.content.includes("А у тебя как?")));
       return "Договорились, поглядываю.";
     },
-    ["member"],
+    ["administrator"],
     undefined,
     config,
     undefined,
@@ -139,19 +143,14 @@ void test("an untagged answer continues Astra's question and a closing acknowled
   }
 });
 
-void test("another participant may join after an unrelated interruption without inheriting admin tools", async () => {
+void test("members cannot join an admin dialogue and another admin gets fresh permissions", async () => {
   const actors: unknown[] = [];
   let detections = 0;
   const { bot, replies } = setup(
     async (_question, _context, runtime) => {
       actors.push(runtime!.requestContext.actor_id);
-      assert.equal(
-        runtime!.tools.some((tool) => tool.name === "get_member_info"),
-        actors.length === 1,
-      );
-      return actors.length === 1
-        ? "Для афиши я бы взяла тёплые цвета."
-        : "Они поддерживают настроение афиши.";
+      assert.equal(runtime!.requestContext.may_inspect_other_members, true);
+      return "Synthetic answer";
     },
     ["member"],
     undefined,
@@ -159,35 +158,33 @@ void test("another participant may join after an unrelated interruption without 
     undefined,
     async (evidence) => {
       detections++;
-      if (evidence.authorId === 3) return { addressed: false, closesConversation: false };
       assert.equal(evidence.authorId, 4);
-      assert.ok(
-        evidence.recentTurns.some(
-          (turn) => turn.authorId === 3 && turn.text === "Маша, скинь исходник",
-        ),
-      );
       return { addressed: true, closesConversation: false };
     },
   );
   bot.api.config.use(async (previous, method, payload, signal) => {
-    if (method === "getChatMember" && "user_id" in payload && payload.user_id === 1)
+    if (method === "getChatMember" && "user_id" in payload && [1, 4].includes(payload.user_id))
       return {
         ok: true,
-        result: { status: "creator", user: { id: 1, is_bot: false, first_name: "Owner" } },
+        result: {
+          status: "administrator",
+          user: { id: payload.user_id, is_bot: false, first_name: "Admin" },
+        },
       } as never;
     return previous(method, payload, signal);
   });
   try {
-    await bot.handleUpdate(update("/ask Какие цвета выбрать?", 1));
+    await bot.handleUpdate(update("/ask Synthetic question", 1));
     await bot.waitForRequests();
-    await bot.handleUpdate(followup("Маша, скинь исходник", 2, 3));
+    await bot.handleUpdate(followup("А почему?", 2, 3));
     await bot.waitForRequests();
+    assert.equal(detections, 0);
     assert.equal(replies.length, 1);
-    await bot.handleUpdate(followup("А почему именно тёплые?", 3, 4));
+    await bot.handleUpdate(followup("А почему?", 3, 4));
     await bot.waitForRequests();
     assert.deepEqual(actors, [1, 4]);
     assert.equal(replies.length, 2);
-    assert.equal(detections, 2);
+    assert.equal(detections, 1);
   } finally {
     await bot.closeRequests();
   }
@@ -199,7 +196,7 @@ void test("unrelated messages do not renew the window and other topics cannot us
   let detections = 0;
   const { bot, replies } = setup(
     async () => "Synthetic answer",
-    ["member"],
+    ["administrator"],
     undefined,
     config,
     undefined,
@@ -234,7 +231,7 @@ void test("continuation detection is deduplicated, drained on shutdown and disca
   let release!: (result: { addressed: boolean; closesConversation: boolean }) => void;
   const { bot, replies } = setup(
     async () => "Synthetic answer",
-    ["member"],
+    ["administrator"],
     undefined,
     config,
     undefined,
@@ -266,7 +263,7 @@ void test("continuation detection is deduplicated, drained on shutdown and disca
 void test("a failed answer delivery does not open an untagged conversation", async () => {
   const { bot } = setup(
     async () => "Synthetic answer",
-    ["member"],
+    ["administrator"],
     undefined,
     config,
     undefined,
@@ -348,7 +345,7 @@ void test("name forms reach intent detection and only direct addresses produce a
         assert.equal(question, text);
         return "Synthetic response";
       },
-      ["member"],
+      ["administrator"],
       undefined,
       config,
       async (evidence) => {
@@ -381,7 +378,7 @@ void test("name screening skips unrelated words, links, code, quotes, forwards a
   ] as const) {
     const { bot, replies } = setup(
       async () => assert.fail("Unexpected answer"),
-      ["member"],
+      ["administrator"],
       undefined,
       config,
       async () => assert.fail("Unexpected intent request"),
@@ -419,8 +416,8 @@ void test("intent failure and lost membership remain silent", async () => {
       scenario === "removed-before"
         ? ["left"]
         : scenario === "removed-during"
-          ? ["member", "left"]
-          : ["member"],
+          ? ["administrator", "member"]
+          : ["administrator"],
       undefined,
       config,
       async () => {
@@ -447,7 +444,7 @@ void test("name intent jobs deduplicate updates, respect conversation limits and
   let detections = 0;
   const { bot, replies } = setup(
     async () => assert.fail("Not addressed"),
-    ["member"],
+    ["administrator"],
     undefined,
     config,
     () => {
@@ -506,15 +503,74 @@ void test("ask quotes long plain text with UTF-16 entity lengths and leaves shor
   }
 });
 
-void test("ask allows ordinary group members to converse without granting moderation actions", async () => {
-  const { bot, replies } = setup(async () => "answer", ["member"]);
-  await bot.handleUpdate(update("/ask question"));
-  await bot.waitForRequests();
-  assert.deepEqual(replies, ["answer"]);
+void test("members are silently denied before AI, intent detection, typing or tool initialization", async () => {
+  for (const status of ["member", "restricted", "left", "kicked"]) {
+    let aiCalls = 0;
+    let intentCalls = 0;
+    let typingCalls = 0;
+    const { bot, replies } = setup(
+      async () => {
+        aiCalls++;
+        return "Unexpected answer";
+      },
+      [status],
+      undefined,
+      config,
+      async () => {
+        intentCalls++;
+        return true;
+      },
+      async () => {
+        intentCalls++;
+        return { addressed: true, closesConversation: false };
+      },
+    );
+    let checks = 0;
+    bot.api.config.use(async (previous, method, payload, signal) => {
+      if (method === "sendChatAction") typingCalls++;
+      if (method === "getChatMember") checks++;
+      return previous(method, payload, signal);
+    });
+    try {
+      const requests = [
+        update("/ask question"),
+        followup("Астра, помоги", 2),
+        followup("@test_bot question", 3),
+        followup("question", 4),
+        update("/ping"),
+        update("/reset"),
+        update("/chatid"),
+      ];
+      assert.ok(requests[2]!.message);
+      requests[2]!.message.entities = [{ type: "mention", offset: 0, length: 9 }];
+      assert.ok(requests[3]!.message);
+      requests[3]!.message.reply_to_message = {
+        message_id: 100,
+        date: 1,
+        chat: requests[3]!.message.chat,
+        from: bot.botInfo,
+        text: "Synthetic bot message",
+      } as unknown as NonNullable<NonNullable<Update["message"]>["reply_to_message"]>;
+      for (const [index, request] of requests.entries()) {
+        request.update_id = index + 1;
+        if (request.message?.entities?.[0]?.type === "bot_command")
+          request.message.entities[0].length = request.message.text!.split(" ")[0]!.length;
+        await bot.handleUpdate(request);
+        await bot.waitForRequests();
+      }
+      assert.deepEqual(replies, []);
+      assert.equal(aiCalls, 0);
+      assert.equal(intentCalls, 0);
+      assert.equal(typingCalls, 0);
+      assert.equal(checks, 6); // /reset is not registered without memory.
+    } finally {
+      await bot.closeRequests();
+    }
+  }
 });
 
-void test("ask suppresses output when group membership is revoked", async () => {
-  const { bot, replies } = setup(async () => "answer", ["member", "left"]);
+void test("ask suppresses output when administrator status is revoked", async () => {
+  const { bot, replies } = setup(async () => "answer", ["administrator", "member"]);
   await bot.handleUpdate(update("/ask question"));
   await bot.waitForRequests();
   assert.deepEqual(replies, []);
@@ -529,7 +585,7 @@ void test("tool initialization failure replies to explicit or confirmed requests
         requests++;
         return "Synthetic answer";
       },
-      ["member"],
+      ["administrator"],
       undefined,
       config,
       async () => true,
@@ -579,7 +635,7 @@ void test("unconfirmed name candidates never initialize tools or send retry mess
   let checks = 0;
   const { bot, replies } = setup(
     async () => assert.fail("Unexpected answer"),
-    ["member"],
+    ["administrator"],
     undefined,
     config,
     async () => false,
@@ -704,7 +760,7 @@ void test("ask restricts private chats to the owner and rejects other groups", a
   await bot.handleUpdate(otherGroup);
   await bot.waitForRequests();
   assert.equal(calls, 1);
-  assert.equal(replies.length, 3);
+  assert.equal(replies.length, 2);
 });
 
 void test("ask prevents overlapping requests from the same user", async () => {
@@ -819,9 +875,16 @@ void test("Telegram does not capture text from an unauthorized private chat", as
   await bot.waitForRequests();
 });
 
-void test("ask authorizes closed groups by ID and requires current membership", async () => {
+void test("ask authorizes closed groups by ID and requires current administrator status", async () => {
   for (const type of ["group", "supergroup"] as const) {
-    for (const status of ["administrator", "member", "left", "kicked"] as const) {
+    for (const status of [
+      "creator",
+      "administrator",
+      "member",
+      "restricted",
+      "left",
+      "kicked",
+    ] as const) {
       let calls = 0;
       const { bot, replies } = setup(
         async () => {
@@ -837,8 +900,8 @@ void test("ask authorizes closed groups by ID and requires current membership", 
       request.message.chat = { id: -100, type, title: "Closed group" };
       await bot.handleUpdate(request);
       await bot.waitForRequests();
-      assert.equal(calls, status === "administrator" || status === "member" ? 1 : 0);
-      assert.equal(replies.length, 1);
+      assert.equal(calls, status === "administrator" || status === "creator" ? 1 : 0);
+      assert.equal(replies.length, calls);
     }
   }
 });
@@ -857,7 +920,7 @@ void test("configured group ID takes precedence over a matching username", async
 });
 
 void test("ask stops chunk delivery when access is revoked between sends", async () => {
-  const { bot, replies } = setup(async () => "a".repeat(7001), ["member"]);
+  const { bot, replies } = setup(async () => "a".repeat(7001), ["administrator"]);
   bot.api.config.use(async (previous, method, payload, signal) => {
     if (method === "getChatMember" && "user_id" in payload && replies.length > 0)
       return {
@@ -929,14 +992,14 @@ function ordinaryUpdate(text: string, updateId = 1): Update {
   return request;
 }
 
-void test("replies to this bot trigger an answer for members and include the quoted message", async () => {
+void test("replies to this bot trigger an answer for administrators and include the quoted message", async () => {
   const { bot, replies } = setup(
     async (question, context) => {
       assert.equal(question, "А подробнее?");
       assert.match(context?.[0]?.content ?? "", /Предыдущий ответ Астры/);
       return "Подробнее";
     },
-    ["member"],
+    ["administrator"],
   );
   const request = ordinaryUpdate("А подробнее?");
   assert.ok(request.message);
@@ -959,7 +1022,7 @@ void test("bot mentions use Telegram entities, support UTF-16 offsets and remove
       questions.push(question);
       return "answer";
     },
-    ["member"],
+    ["administrator"],
   );
   const request = ordinaryUpdate("😀 @TeSt_BoT объясни @someone");
   assert.ok(request.message);
@@ -987,7 +1050,10 @@ void test("bot mentions use Telegram entities, support UTF-16 offsets and remove
 });
 
 void test("ordinary messages, other mentions, other replies and unrelated commands remain silent", async () => {
-  const { bot, replies } = setup(async () => assert.fail("Not addressed to this bot"), ["member"]);
+  const { bot, replies } = setup(
+    async () => assert.fail("Not addressed to this bot"),
+    ["administrator"],
+  );
   const requests = [
     ordinaryUpdate("Обычное обсуждение", 1),
     ordinaryUpdate("name@test_bot.example и https://example.test/@test_bot", 2),
@@ -1020,7 +1086,7 @@ void test("reply and mention triggers still deny other chats, bots and anonymous
   const { bot } = setup(async () => {
     calls++;
     return "answer";
-  }, ["member"]);
+  }, ["administrator"]);
   for (const scope of ["private", "other-group", "bot", "anonymous"] as const) {
     const request = ordinaryUpdate("@test_bot вопрос");
     assert.ok(request.message?.from);
@@ -1043,7 +1109,7 @@ void test("reply and mention triggers still deny other chats, bots and anonymous
   assert.equal(calls, 0);
 });
 
-void test("reset remains restricted to administrators while members can ask", async () => {
+void test("reset silently ignores members", async () => {
   let resets = 0;
   const memory: ConversationMemory = {
     record: async () => undefined,
@@ -1062,7 +1128,7 @@ void test("reset remains restricted to administrators while members can ask", as
   await bot.handleUpdate(reset);
   await bot.waitForRequests();
   assert.equal(resets, 0);
-  assert.match(replies[0] ?? "", /только администраторы/);
+  assert.deepEqual(replies, []);
 });
 
 void test("addressed questions use shared request limits and record memory once", async () => {
@@ -1083,7 +1149,7 @@ void test("addressed questions use shared request limits and record memory once"
       new Promise((resolve) => {
         release = resolve;
       }),
-    ["member"],
+    ["administrator"],
     memory,
   );
   const request = ordinaryUpdate("@test_bot вопрос");
@@ -1101,7 +1167,7 @@ void test("addressed questions use shared request limits and record memory once"
 void test("chatid reports an unconfigured group ID without invoking the assistant", async () => {
   const { bot, replies } = setup(
     async () => assert.fail("Chat ID lookup must not invoke AI"),
-    [],
+    ["administrator"],
     undefined,
     { ...config, allowedChatIds: [-200, -300], allowedChatId: undefined },
   );
@@ -1155,7 +1221,7 @@ void test("literal exact bot tags without entities trigger greetings while simil
       questions.push(question);
       return "Привет!";
     },
-    ["member"],
+    ["administrator"],
   );
   for (const [index, text] of [
     "@test_bot привет",
@@ -1184,7 +1250,7 @@ void test("long underscored bot username mentions are logged before routing and 
       questions.push(question);
       return "Мониторинг настраивается через конфигурацию.";
     },
-    ["member"],
+    ["administrator"],
   );
   bot.botInfo = { ...bot.botInfo, username: "synthetic_in_your_mindbot" };
   for (const withEntity of [false, true]) {
@@ -1213,7 +1279,7 @@ void test("tall answers collapse by line count including blank lines and CRLF wh
     [Array(6).fill("😀 пункт").join("\n\n") + "\n", true],
     [Array(12).fill("😀").join("\r\n"), true],
   ] as const) {
-    const { bot, replies, replyEntities } = setup(async () => answer, ["member"]);
+    const { bot, replies, replyEntities } = setup(async () => answer, ["administrator"]);
     await bot.handleUpdate(update("/ask question"));
     await bot.waitForRequests();
     assert.deepEqual(replies, [answer]);

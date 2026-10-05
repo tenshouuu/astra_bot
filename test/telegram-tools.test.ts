@@ -156,51 +156,18 @@ void test("members see read-only capabilities and cannot request moderation thro
   await moderation.close();
 });
 
-void test("members have common and self tools; forged targets cannot inspect others", async () => {
+void test("members cannot execute even common or self tools", async () => {
   const { ctx, store, moderation, state } = await setup("member");
   try {
-    await store.observe({
-      updateId: 2,
-      chatId: BigInt(config.allowedChatId!),
-      userId: 2n,
-      messageId: 11,
-      topicId: 7,
-      text: "My synthetic message",
-      replyText: "",
-      authorLabel: "Self",
-      isBot: false,
-      sentAt: new Date(),
-    });
     const runtime = await createTelegramTools(ctx, config, store, moderation);
-    assert.equal(runtime.requestContext.actor_role, "member");
-    assert.equal(runtime.requestContext.may_inspect_other_members, false);
-    assert.deepEqual(await runtime.execute("get_chat_member_count", {}), {
-      chat_id: config.allowedChatId,
-      member_count: 23,
-    });
-    const profile = (await runtime.execute("get_my_profile", {})) as { user_id: number };
-    assert.equal(profile.user_id, 2);
-    const search = (await runtime.execute("search_my_messages", { query: "" })) as {
-      messages: { user_id: number; message_id: number }[];
-      user_id_filter: number;
-    };
-    assert.equal(search.user_id_filter, 2);
-    assert.deepEqual(
-      search.messages.map((item) => [item.user_id, item.message_id]),
-      [[2, 11]],
-    );
-    assert.deepEqual(await runtime.execute("get_my_profile", { user_id: 3 }), {
-      error: "invalid_arguments",
-    });
-    assert.deepEqual(await runtime.execute("search_my_messages", { query: "", user_id: 3 }), {
-      error: "invalid_arguments",
-    });
-    assert.deepEqual(await runtime.execute("get_member_info", { user_id: 3 }), {
-      error: "tool_unavailable",
-    });
-    assert.deepEqual(await runtime.execute("search_messages", { query: "", user_id: null }), {
-      error: "tool_unavailable",
-    });
+    for (const [name, args] of [
+      ["get_chat_info", {}],
+      ["get_chat_member_count", {}],
+      ["get_my_profile", {}],
+      ["search_my_messages", { query: "" }],
+    ] as const) {
+      assert.deepEqual(await runtime.execute(name, args), { error: "access_denied" });
+    }
     assert.equal(state.profileLookups, 0);
   } finally {
     await moderation.close();

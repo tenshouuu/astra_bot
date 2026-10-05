@@ -171,7 +171,7 @@ export function createModerationActions(
     },
     async announceBan(item) {
       if (item.status !== "banned" || !(await canModerate(item))) return false;
-      let text = "Участника забанила. Продолжаем разговор.";
+      let text = "Модераторская совесть довольна. Премию принимаю мемами.";
       if (generateBanAnnouncement) {
         try {
           text = await generateBanAnnouncement();

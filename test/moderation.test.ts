@@ -423,7 +423,7 @@ void test("AI failure sends a fallback once without affecting the confirmed ban"
     assert.equal(state.announcements, 1);
     assert.match(
       sent.find((entry) => entry.chatId === config.allowedChatId)!.text,
-      /Продолжаем разговор/,
+      /Модераторская совесть довольна/,
     );
   } finally {
     await bot.closeRequests();
@@ -727,8 +727,9 @@ void test("crypto sale observation logs review progress without exposing message
   }
 });
 
-void test("a moderation capture failure does not swallow a bot mention", async () => {
+void test("a moderation capture failure does not swallow an administrator's bot mention", async () => {
   const { bot, store, sent, state } = setup();
+  state.targetStatus = "administrator";
   store.observe = async () => {
     throw new Error("Synthetic persistence failure");
   };
