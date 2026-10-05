@@ -24,7 +24,10 @@ or suspicious cases to the owner in a private chat, offering an explicit ban or 
 
 The service provides Fastify health and Telegram bot-info endpoints, Telegram long polling, and
 an OpenAI Responses API adapter. `/ask`, replies to the bot, mentions and name addresses use one bounded request
-handler. Conversation access is available to current group members and the owner in private chat;
+handler. The shared character prompt targets one or two short phrases (usually up to 30 words) for
+casual chat, with detail on request or when needed. It encourages contextual humor, avoids repeated
+caveats and invented explanations for missed replies, and retains concise responses to concrete danger.
+Conversation access is available to current group members and the owner in private chat;
 management access is checked separately and `/reset` remains administrator/owner-only.
 Conversation responses cannot invoke moderation actions. Telegram membership is checked before requesting and before each
 answer chunk. AI requests run in bounded background jobs, with one active request per conversation;
